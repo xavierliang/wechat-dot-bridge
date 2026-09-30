@@ -1,0 +1,13 @@
+node_modules/
+secrets/
+state*/
+*.enc
+*.tmp
+*.sqlite*
+.env*
+!.env.example
+.DS_Store
+*.log
+*.zip
+test-results.txt
+demo-results.json

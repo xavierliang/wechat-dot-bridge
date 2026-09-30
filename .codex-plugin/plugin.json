@@ -1,0 +1,17 @@
+{
+  "name": "wechat-dot-bridge",
+  "version": "0.2.0",
+  "description": "WeChat-to-dot MCP Events bridge deployment package; live connection not validated",
+  "author": {
+    "name": "Local developer"
+  },
+  "interface": {
+    "displayName": "WeChat dot Bridge",
+    "shortDescription": "Review and configure the WeChat MCP Events bridge.",
+    "longDescription": "Owner-bound iLink adapter, OAuth resource server, MCP Events and deployment files. Actual account linking, host registration and deployment are not performed.",
+    "developerName": "Local developer",
+    "category": "Productivity",
+    "capabilities": [],
+    "defaultPrompt": "Review and configure this WeChat MCP Events bridge package."
+  }
+}

@@ -1,0 +1,11 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtemp,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {spawn} from 'node:child_process';
+import {once} from 'node:events';
+import {Store} from '../src/store.mjs';
+import {KEY} from './fixtures.mjs';
+test('SQLite process lock releases after abrupt worker death without deleting locks',async t=>{const dir=await mkdtemp(join(tmpdir(),'wechat-lock-'));t.after(()=>rm(dir,{recursive:true}));const url=new URL('../src/store.mjs',import.meta.url).href;const child=spawn(process.execPath,['--input-type=module','-e',`import {Store} from ${JSON.stringify(url)}; const s=await Store.open(${JSON.stringify(dir)},Buffer.alloc(32,7));s.state.cursor='durable';await s.save();process.stdout.write('ready\\n');setInterval(()=>{},1000);`],{stdio:['ignore','pipe','pipe']});t.after(()=>{if(child.exitCode===null)child.kill('SIGKILL');});let errors='';child.stderr.on('data',c=>{errors+=c;});await once(child.stdout,'data');await assert.rejects(Store.open(dir,KEY),/store_already_open/);const ended=once(child,'exit');child.kill('SIGKILL');await ended;assert.equal(errors,'');const restored=await Store.open(dir,KEY);assert.equal(restored.state.cursor,'durable');await restored.close();});
+test('concurrent persistent snapshots serialize and restore newest committed state',async t=>{const dir=await mkdtemp(join(tmpdir(),'wechat-store-'));t.after(()=>rm(dir,{recursive:true}));const store=await Store.open(dir,KEY);store.state.cursor='one';const a=store.save();store.state.cursor='two';const b=store.save();await Promise.all([a,b]);await store.close();const restored=await Store.open(dir,KEY);assert.equal(restored.state.cursor,'two');await restored.close();});

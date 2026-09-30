@@ -1,0 +1,19 @@
+{
+  "name": "wechat-dot-bridge",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "demo": "node test/demo.mjs",
+    "check": "node src/check.mjs",
+    "start": "node src/main.mjs",
+    "preflight": "node src/preflight.mjs"
+  },
+  "dependencies": {
+    "jose": "6.2.12"
+  }
+}

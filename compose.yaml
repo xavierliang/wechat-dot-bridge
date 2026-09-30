@@ -1,0 +1,31 @@
+services:
+  bridge:
+    build:
+      context: .
+      target: runtime
+    init: true
+    restart: unless-stopped
+    env_file: .env
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    mem_limit: 256m
+    cpus: 1.0
+    stop_grace_period: 70s
+    ports:
+      - "${BRIDGE_PUBLISH_BIND:-127.0.0.1}:${BRIDGE_PUBLISH_PORT:-8443}:8443"
+    volumes:
+      - bridge-data:/data
+      - ./secrets:/run/secrets:ro
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    healthcheck:
+      test: ["CMD", "node", "src/healthcheck.mjs"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+volumes:
+  bridge-data:

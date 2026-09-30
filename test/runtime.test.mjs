@@ -1,0 +1,11 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {PollingRuntime} from '../src/runtime.mjs';
+import {safeLog} from '../src/logging.mjs';
+import {loadConfig} from '../src/config.mjs';
+const tick=()=>new Promise(r=>setImmediate(r));
+test('runtime single loop starts, cancels longpoll, and waits for shutdown',async()=>{let polls=0;const bridge={queue:Promise.resolve(),pump:async()=>{},pollOnce:async signal=>{polls++;await new Promise((_,reject)=>signal.addEventListener('abort',()=>reject(Error('aborted')),{once:true}));}};const runtime=new PollingRuntime({bridge});runtime.start();await tick();assert.equal(polls,1);assert.throws(()=>runtime.start(),/already_started/);await runtime.stop();assert.equal(runtime.phase,'stopped');assert.equal(polls,1);});
+test('runtime session expiry stops loops and requires relinking',async()=>{const phases=[],bridge={queue:Promise.resolve(),pump:async()=>{},pollOnce:async()=>{throw Object.assign(Error('ilink_session_expired'),{code:'ilink_session_expired'});}};const runtime=new PollingRuntime({bridge,onState:p=>phases.push(p)}).start();await runtime.done;assert.equal(runtime.phase,'relink_required');assert.equal(runtime.signal.aborted,true);assert.ok(phases.includes('relink_required'));});
+test('runtime transient poll failures back off with a bound',async()=>{const waits=[];let runtime;const bridge={queue:Promise.resolve(),pump:async()=>{},pollOnce:async()=>{throw Error('transient');}};runtime=new PollingRuntime({bridge,wait:async(ms,signal)=>{if(ms>=1000){waits.push(ms);if(waits.length===8)runtime.controller.abort();}else await new Promise(r=>signal.addEventListener('abort',r,{once:true}));}});runtime.start();await runtime.done;assert.deepEqual(waits,[1000,2000,4000,8000,16000,32000,60000,60000]);});
+test('logs reject arbitrary error messages, tokens, headers and URLs',()=>{const lines=[];safeLog('Bearer synthetic-token at https://secret.invalid/?q=secret',s=>lines.push(s));assert.equal(JSON.parse(lines[0]).event,'request_failed');assert.ok(!lines[0].includes('synthetic'));});
+test('configuration fails closed without explicit live gate and external files',()=>{assert.throws(()=>loadConfig({}),/live_mode_disabled/);assert.throws(()=>loadConfig({BRIDGE_ENABLE_LIVE:'true'}),/BRIDGE_PUBLIC_URL/);});
