@@ -2,9 +2,42 @@
 
 ## Current boundary
 
-This repository implements a **single-owner OAuth resource server**. It does not implement an identity provider, user signup, consent screen, token endpoint, client registration service, refresh-token service, or IdP revocation endpoint. An operator must choose and configure a standards-compliant external authorization server before the bridge can authenticate real requests.
+This repository implements a **single-owner OAuth resource server** and, when explicitly enabled, a confidential owner web client. It does not implement an identity provider, user signup, consent screen, token endpoint, client registration service, refresh-token service, or IdP revocation endpoint. An operator must choose and configure a standards-compliant external authorization server before the bridge can authenticate real requests.
 
 No login, authorization grant, credential creation, key generation, real token issuance, public deployment, or ChatGPT registration was performed in this work. Passing offline tests does not establish that a particular account, plugin surface, IdP, or callback host will interoperate.
+
+## Owner web admin client (v0.3)
+
+The owner UI is an OAuth/OIDC **client**, not an authorization server. It uses pinned `openid-client` 6.8.8, Authorization Code + PKCE S256, state and nonce. Only the configured HTTPS origin plus `/admin/oauth/callback` is accepted. Issuer discovery, authorization, token and JWKS endpoints must stay on the exact configured issuer origin. Discovery advertises `code`, `S256` and `client_secret_basic`; ID tokens are signature-verified with RS256 and checked for issuer, client audience, nonce, expiry and exact owner subject. The independent resource-server verifier also checks the access token's signature, resource audience, owner, scope, lifetime and revocation state before any session is established.
+
+For the planned `wechat.resopod.ai` origin, configure a **separate** Auth0 administrative application as follows. These are implementation settings, not evidence that an application has been created or deployed:
+
+| Auth0 field | Exact setting |
+| --- | --- |
+| Application Type | Regular Web Application (confidential server client) |
+| Credentials → Authentication Method | Client Secret (Basic), `client_secret_basic` |
+| Allowed Callback URLs | `https://wechat.resopod.ai/admin/oauth/callback` only |
+| Application Login URI | Leave empty; the login flow must start from the local form |
+| Allowed Logout URLs | Leave empty; this implementation does not call Auth0 logout |
+| Allowed Web Origins / CORS | Leave empty; no cross-origin browser token requests |
+| Grant Types | Authorization Code; no implicit, password, client-credentials or refresh-token flow needed for this admin client |
+| ID-token signing algorithm | RS256; OIDC conformant |
+| API Identifier / request audience + resource | `https://wechat.resopod.ai/mcp` |
+| Requested login scopes | `openid bridge:admin` |
+| API access-token profile | RFC 9068; RS256; maximum lifetime 3600 seconds; unencrypted signed JWT |
+| API permissions | Define `bridge:admin` and `bridge:mcp`; only the separate admin client/owner may receive administrative scope |
+
+Auth0 documents [application settings](https://auth0.com/docs/get-started/applications/application-settings), [Client Secret (Basic)](https://auth0.com/docs/get-started/applications/credentials), [API settings](https://auth0.com/docs/get-started/apis/api-settings), and the [RFC 9068 profile](https://auth0.com/docs/secure/tokens/access-tokens/access-token-profiles). The installed [openid-client](https://github.com/panva/openid-client) implements the protocol checks and confidential token exchange. If RBAC is enabled, assign the owner the admin permission and verify that the issued **scope** contains `bridge:admin`; a permissions array alone is insufficient. A reported Resource Parameter Compatibility setting still needs real acceptance testing: requests send the same exact API identifier as both `audience` and `resource`.
+
+The public start/return page is `https://wechat.resopod.ai/admin`. Login requires a CSRF-protected POST from that page; unsolicited IdP-initiated login is unsupported. The OAuth callback is the only GET that changes authentication state. No GET creates a QR or confirms/revokes a binding. Do not register wildcard callbacks or substitute `/mcp`, `/callback`, `/admin/login`, or a provider logout callback.
+
+Provision the exact issuer (including trailing slash), verified owner `sub`, admin client ID and an owner-readable `0400`/`0600` client-secret file outside Git. Set `BRIDGE_ADMIN_UI_ENABLED=true`, `BRIDGE_ADMIN_CLIENT_ID` and `BRIDGE_ADMIN_CLIENT_SECRET_FILE`; `.env.example` contains only templates. Never send the client secret or an admin bearer token through chat. A client ID or email cannot replace the verified owner subject. No real tenant, owner identity, client ID or secret is committed in this repository.
+
+Sessions hold API tokens only in server memory and rotate the opaque cookie after login. Cookies use `__Host-bridge_admin`, Secure, HttpOnly, SameSite=Lax, Path=/ and no Domain. Prelogin state/nonce/PKCE transactions expire in five minutes and are consumed before token exchange, including failures. Authenticated sessions expire after at most one hour, earlier token expiry, or 15 minutes idle; restart logs everyone out. Forms enforce exact Origin, same-origin fetch metadata when supplied and one-use CSRF tokens. Responses are no-store/no-referrer with a restrictive CSP. QR images are generated locally from authenticated, bounded opaque content without fetching image URLs.
+
+**Local logout only:** `POST /admin/logout` destroys the browser's bridge session, aborts pending work and drains dispatched operations before acknowledging. A mutation already in its atomic storage write can finish before logout returns; logout does not undo a binding that has committed. Use the explicit revoke form to stop WeChat access. Logout does not terminate other browser sessions, revoke provider grants or log out the Auth0 SSO session. A later login still requests `prompt=login`. No refresh tokens or `offline_access` are requested or stored. Per-request local access revocation is checked; provider-side account disablement still requires the external revocation integration described below.
+
+The session pool is bounded at 128 entries. Anonymous pressure evicts prelogin sessions before authenticated owners; sustained traffic can force a pending login to restart. Apply independently approved availability controls at the proxy if needed; no blanket security/proxy changes are implied by enabling this UI.
 
 ## Official requirements and registration route
 
@@ -83,7 +116,7 @@ The [MCP authorization specification](https://modelcontextprotocol.io/specificat
 
 ### Public-key rotation
 
-The JWKS snapshot is copied when the factory is created. A modified disk file does not change a running verifier. Operators must obtain updated public keys through a trusted provisioning path, validate that path independently, and restart/reconstruct the verifier. Plan overlap for active IdP signing keys. Unknown signing keys fail closed until provisioned. No automatic remote JWKS refresh or discovery fetch is implemented.
+The JWKS snapshot is copied when the factory is created. A modified disk file does not change a running verifier. Operators must obtain updated public keys through a trusted provisioning path, validate that path independently, and restart/reconstruct the verifier. Plan overlap for active IdP signing keys. Unknown signing keys fail closed until provisioned. The resource-server verifier performs no automatic remote JWKS refresh. Separately, the optional admin OIDC client retrieves issuer discovery and ID-token signing keys using a restricted HTTPS transport; those keys do not replace the provisioned API verification snapshot.
 
 ## Revocation semantics
 

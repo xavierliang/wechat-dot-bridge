@@ -51,7 +51,7 @@ export function createRestrictedHttpsTransport({allowedHosts=[],resolve=lookup,t
      res.on('data',c=>{size+=c.length;if(size>maxResponseBytes)res.destroy(Error('response_too_large'));else chunks.push(c);});
      res.on('error',()=>reject(Error('response_failed')));res.on('end',()=>{
       if(res.statusCode>=300&&res.statusCode<400)return reject(Error('redirect_rejected'));
-      resolveResult({status:res.statusCode,body:Buffer.concat(chunks).toString()});
+      resolveResult({status:res.statusCode,body:Buffer.concat(chunks).toString(),headers:res.headers??{}});
      });
     });
     req.on('error',()=>reject(Error(controller.signal.aborted?'aborted_or_timeout':'transport_failed')));req.end(method==='GET'?undefined:body);

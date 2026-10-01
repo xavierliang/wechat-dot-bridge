@@ -46,9 +46,10 @@ export class LinkingService {
    this.#state=copy(state);
   }catch{this.#failed=true;throw fail('link_storage_unavailable');}
  }
- async #save(next,transition){
-  try{await this.#saveSecret(copy(next),copy(transition));this.#state=next;}
-  catch{this.#failed=true;throw fail('link_storage_unavailable');}
+ async #save(next,transition,signal){
+  if(signal?.aborted)throw fail('ilink_aborted');
+  try{await this.#saveSecret(copy(next),copy(transition),signal);this.#state=next;}
+  catch(error){if(error.message==='ilink_aborted')throw fail('ilink_aborted');this.#failed=true;throw fail('link_storage_unavailable');}
  }
  #request(requestId){const r=this.#state.request;if(!r||requestId!==undefined&&r.id!==requestId)throw fail('link_request_not_found');return r;}
  #public(){
@@ -70,6 +71,7 @@ export class LinkingService {
   return signal?AbortSignal.any([controller.signal,signal]):controller.signal;
  }
  async begin({principal,signal}={}){return this.#run(principal,async()=>{
+  if(signal?.aborted)throw fail('ilink_aborted');
   await this.#expire();if(this.#state.binding)throw fail('link_already_active');
   if(this.#state.request&&ACTIVE.has(this.#state.request.status))throw fail('link_request_in_progress');
   const combined=this.#networkSignal(signal);let qr;
@@ -78,7 +80,7 @@ export class LinkingService {
   if(!object(qr)||!text(qr.qrcode,8192)||!text(qr.qrContent,65536))throw fail('link_qr_invalid');
   const createdAt=this.#now();
   const request={id:`link_${randomBytes(24).toString('base64url')}`,ownerPrincipal:this.#owner,createdAt,expiresAt:createdAt+this.#ttl,status:'waiting',qrcode:qr.qrcode,qrContent:qr.qrContent,baseUrl:this.#client.validateBaseUrl(qr.baseUrl)};
-  await this.#save({version:1,request,binding:null},{type:'begin'});return this.#public();
+  await this.#save({version:1,request,binding:null},{type:'begin'},signal);return this.#public();
  });}
  async status({principal,requestId}={}){return this.#run(principal,async()=>{
   await this.#expire();if(requestId!==undefined)this.#request(requestId);return this.#public();
@@ -91,6 +93,7 @@ export class LinkingService {
   return {requestId:r.id,expiresAt:new Date(r.expiresAt).toISOString(),qrContent:r.qrContent};
  });}
  async poll({principal,requestId,verifyCode,signal}={}){return this.#run(principal,async()=>{
+  if(signal?.aborted)throw fail('ilink_aborted');
   await this.#expire();if(!requestId)throw fail('link_request_not_found');const r=this.#request(requestId);
   if(!ACTIVE.has(r.status)||r.status==='awaiting_owner_confirmation')return this.#public();
   if(verifyCode!==undefined&&(r.status!=='needs_verification'||typeof verifyCode!=='string'||!/^[0-9]{1,16}$/.test(verifyCode)))throw fail('link_verification_code_invalid');
@@ -114,9 +117,10 @@ export class LinkingService {
    case 'binded_redirect':next.request=this.#strip(request,'already_bound');break;
    default:throw fail('link_qr_status_invalid');
   }
-  await this.#save(next,{type:'poll'});return this.#public();
+  await this.#save(next,{type:'poll'},signal);return this.#public();
  });}
- async confirm({principal,requestId,scannerId}={}){return this.#run(principal,async()=>{
+ async confirm({principal,requestId,scannerId,signal}={}){return this.#run(principal,async()=>{
+  if(signal?.aborted)throw fail('ilink_aborted');
   await this.#expire();if(!requestId)throw fail('link_request_not_found');const r=this.#request(requestId);
   if(this.#state.binding&&this.#state.binding.requestId===requestId&&this.#state.binding.scannerId===scannerId)return this.#public();
   if(r.status!=='awaiting_owner_confirmation')throw fail('link_confirmation_unavailable');
@@ -124,23 +128,25 @@ export class LinkingService {
   const binding={ownerPrincipal:this.#owner,requestId:r.id,...r.candidate,boundAt:this.#now()};
   const next={version:1,request:this.#strip(r,'bound'),binding};
   try{await this.#onBind?.(copy(binding));}catch{this.#failed=true;throw fail('link_commit_failed');}
-  await this.#save(next,{type:'bind',binding});return this.#public();
+  await this.#save(next,{type:'bind',binding},signal);return this.#public();
  });}
  // Internal daemon use only. Do not expose this method through any HTTP/MCP
  // response, serialization, logging, metrics or other caller-visible output.
  async getActiveBinding({principal}={}){return this.#run(principal,async()=>{await this.#expire();return copy(this.#state.binding);});}
- async revoke({principal,requestId}={}){
+ async revoke({principal,requestId,signal}={}){
   this.#check(principal);
+  if(signal?.aborted)throw fail('ilink_aborted');
   // Abort a pending poll immediately, before waiting for the serialization
   // queue. Only the configured owner can interrupt it.
   this.#activeController?.abort();
   return this.#run(principal,async()=>{
+   if(signal?.aborted)throw fail('ilink_aborted');
    if(!requestId)throw fail('link_request_not_found');const r=this.#request(requestId);
    const previousBinding=this.#state.binding;
    const next={version:1,request:this.#strip(r,'revoked'),binding:null};
    const view={principal:this.#owner,requestId:r.id,botId:previousBinding?.botId,scannerId:previousBinding?.scannerId};
    try{await this.#onRevoke?.(view);}catch{this.#failed=true;throw fail('link_revoke_failed');}
-   await this.#save(next,{type:'revoke',previousBinding});return this.#public();
+   await this.#save(next,{type:'revoke',previousBinding},signal);return this.#public();
   });
  }
 }

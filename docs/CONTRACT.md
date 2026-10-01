@@ -1,4 +1,4 @@
-# Protocol and reliability contract — v0.2
+# Protocol and reliability contract — v0.3
 
 This implementation is single-owner, single-bot, text-only. Production codepaths exist, but only synthetic/local tests have executed. A real account, TLS deployment, external OAuth client, host subscription and dot round-trip remain acceptance gates.
 
@@ -9,6 +9,12 @@ Protocol version is `2026-07-28`. `/mcp` supports stateless JSON responses to PO
 OAuth bearer authentication applies to discovery, tools and events. RFC9728 public metadata identifies the external authorization server. The real issuer, audience and owner subject are exact matches; jose verifies asymmetric JWT signatures using an operator-provided public JWKS. Admin and ordinary MCP scopes are separate. Local revocation state is checked per request; failed/missing/Promise-truthiness authorization cannot grant access. No OAuth authorization server or live host/client registration is invented.
 
 QR request and scanner identity are tied to that verified owner. The scanner is not trusted until a second authenticated owner confirmation specifies its exact ID. Sensitive QR data is available only on a no-store admin route; bot credentials never enter MCP results. Tokens/keys are not included in logs or error text.
+
+## Bootstrap and owner UI
+
+An empty callback hostname allowlist is a supported preparation state. Verified MCP discovery, tool/event listings, status and optional web admin login remain available. Subscribe, reply, callback delivery and message polling refuse to run. A later allowlist change requires restart and can resume an existing valid binding. Persisted subscriptions are rechecked against the current exact allowlist before sending. DNS pinning, public-address checks, HTTPS validation and redirect rejection remain unchanged.
+
+The optional `/admin` UI uses a confidential Authorization Code + PKCE client with fixed `/admin/oauth/callback`, state/nonce, issuer and owner validation, one-use CSRF forms and server-only bearer tokens. QR creation, status polling, exact scanner confirmation, revoke and local logout require authenticated POST forms. Logout cancels waiting work and acknowledges only after dispatched mutations drain; a previously committed binding remains until explicit revoke. See AUTH.md for lifetimes, limitations and client settings.
 
 ## Events and sending
 

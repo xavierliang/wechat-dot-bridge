@@ -11,7 +11,7 @@ export class Bridge {
   if(!['offline-test','configured'].includes(mode))throw Error('live_mode_not_implemented');
   if(!str(owner)||!str(bot)||!store||!transport||!adapter)throw Error('explicit_dependencies_required');
   if((store.state.owner&&store.state.owner!==owner)||(store.state.bot&&store.state.bot!==bot))throw Error('store_identity_mismatch');
-  Object.assign(this,{mode,store,owner,bot,allowedSenders:new Set(allowedSenders),callbackHosts,transport,adapter,authorize,now});
+  Object.assign(this,{mode,store,owner,bot,allowedSenders:new Set(allowedSenders),callbackHosts:Object.freeze([...callbackHosts]),transport,adapter,authorize,now});
   store.state.owner=owner;store.state.bot=bot;this.queue=Promise.resolve();this.verified=new Map();this.polling=false;
  }
  run(fn){const result=this.queue.then(fn);this.queue=result.catch(()=>{});return result;}
@@ -23,6 +23,8 @@ export class Bridge {
  }
  id(principal,p){return 'sub_'+hash([principal,p.delivery.url,p.name,{sender_id:p.arguments.sender_id}]);}
  async signed(sub,payload,id){
+  if(!this.callbackHosts.length)throw Error('callbacks_not_configured');
+  callbackUrl(sub.url,this.callbackHosts);
   const body=JSON.stringify(payload);if(Buffer.byteLength(body)>262144)throw Error('payload_too_large');
   const timestamp=String(Math.floor(this.now()/1000));
   let signature=sign(sub.secret,id,timestamp,body);
@@ -31,7 +33,7 @@ export class Bridge {
   if(r.status>=300&&r.status<400)throw Error('redirect_rejected');return r;
  }
  subscribe(principal,p){return this.run(async()=>{
-  this.check(principal);this.filters(p,true);
+  this.check(principal);if(!this.callbackHosts.length)throw Error('callbacks_not_configured');this.filters(p,true);
   if(p.cursor!=null)throw Error('replay_not_supported');
   if(p.ttlMs!=null&&(!Number.isFinite(p.ttlMs)||p.ttlMs<=0))throw Error('invalid_ttl');
   if(Object.keys(this.store.state.subscriptions).length>=32&&!this.store.state.subscriptions[this.id(principal,p)])throw Error('subscription_capacity_reached');
@@ -85,11 +87,13 @@ export class Bridge {
   this.store.state.cursor=batch.cursor;await this.store.save();
  });}
  async pollOnce(signal){
+  if(!this.callbackHosts.length)throw Error('callbacks_not_configured');
   if(this.polling)throw Error('poll_already_running');this.polling=true;
   try{this.check(this.owner);const batch=await this.adapter.poll(this.store.state.cursor,{signal});await this.ingest(batch);this.lastPollAt=this.now();}finally{this.polling=false;}
  }
  pump(){return this.run(async()=>{
   this.check(this.owner);
+  if(!this.callbackHosts.length)throw Error('callbacks_not_configured');
   for(const job of Object.values(this.store.state.outbox)){
    if(job.state!=='pending'||job.nextAt>this.now())continue;
    if(job.attempts>=5){job.state='dead';await this.store.save();continue;}
@@ -111,6 +115,7 @@ export class Bridge {
  status(principal){this.check(principal);return {mode:this.mode,connected:this.mode==='configured'&&!!this.lastPollAt&&this.now()-this.lastPollAt<120000,inboxCount:Object.keys(this.store.state.inbox).length,pendingEvents:Object.values(this.store.state.outbox).filter(j=>j.state==='pending').length,quarantinedMessages:Object.keys(this.store.state.quarantine??{}).length,deadEvents:Object.values(this.store.state.outbox).filter(j=>j.state==='dead').length};}
  reply(principal,args){return this.run(async()=>{
   this.check(principal);
+  if(!this.callbackHosts.length)throw Error('callbacks_not_configured');
   if(!exact(args,['message_id','text','idempotency_key'])||!str(args.message_id)||!str(args.text,2000)||!str(args.idempotency_key,128))throw Error('invalid_reply');
   const key=hash([principal,args.idempotency_key]),fingerprint=hash([args.message_id,args.text,args.idempotency_key]),old=this.store.state.replies[key];
   if(old){if(old.fingerprint!==fingerprint)throw Error('idempotency_conflict');return {state:old.state,client_id:old.clientId};}

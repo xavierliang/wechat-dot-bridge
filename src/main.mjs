@@ -4,13 +4,15 @@ import {Store} from './store.mjs';
 import {createApplication} from './application.mjs';
 import {createHttpsServer} from './http-server.mjs';
 import {safeLog} from './logging.mjs';
+import {createAdminOAuth} from './admin-oauth.mjs';
 export async function main(){
  process.umask(0o077);
  const config=loadConfig(),secrets=await loadSecrets(config);
  const store=await Store.open(config.dataDir,secrets.storageKey);secrets.storageKey.fill(0);
  const shutdown=new AbortController();let application,server;
  try{
-  application=await createApplication({config,store,jwks:secrets.jwks});
+  const adminOAuth=config.adminEnabled?createAdminOAuth(config,secrets.adminClientSecret):undefined;
+  application=await createApplication({config,store,jwks:secrets.jwks,adminOAuth});
   server=createHttpsServer({application,publicUrl:config.publicUrl,tlsKey:secrets.tlsKey,tlsCert:secrets.tlsCert,shutdownSignal:shutdown.signal});
   await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(config.port,config.bind,resolve);});
   await application.start();safeLog('ready');

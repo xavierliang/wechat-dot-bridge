@@ -20,10 +20,11 @@ Prepare files outside the repo via an approved secret manager:
 - `tls.key`: private key for your valid public TLS certificate
 - `tls.crt`: certificate chain for the public hostname
 - `idp-public-jwks.json`: public key set, never private JWKs
+- `admin-client-secret`: confidential admin client secret, only when web admin is enabled
 
 The container runs UID/GID 1000. Secret mount directory must be readable by that UID; private-key files must be owner-only (`0400` or `0600`) and owned appropriately. No script in this package creates production credentials. Do not transmit secrets in chat, shell history, URLs, logs, Git or this archive.
 
-Copy `.env.example` to a private `.env`, replace every placeholder, and retain `BRIDGE_ENABLE_LIVE=false` until deployment is approved. Set the exact allowed callback hostname(s) observed in the legitimate host's configuration/subscription request; do not use wildcards or disable DNS checks to make an unknown callback work. Future callbacks outside the allowlist fail closed.
+Copy `.env.example` to a private `.env`, replace every placeholder, and retain `BRIDGE_ENABLE_LIVE=false` until deployment is approved. Initially leave `BRIDGE_CALLBACK_HOSTS=` empty if the host has not supplied its callback domain. Bootstrap allows authenticated MCP discovery/status and admin login, while subscriptions, WeChat message polling and sends fail closed. QR creation remains an explicit owner action. Once a callback host is actually observed and approved, set its exact hostname and restart; an existing valid binding can then resume polling. Set only hostname(s) observed in the legitimate host's configuration/subscription request; do not use wildcards or disable DNS checks to make an unknown callback work. Future callbacks outside the allowlist fail closed.
 
 The Docker volume `/data` contains encrypted content plus an SQLite process-lock database. Back up the encrypted state together with a separately protected copy of its storage key. Losing the key loses recoverability. A backup rollback can restore older dedup state; do not blindly resume polling after rollback without reconciling deliveries. Keep secret backups and state access minimal.
 
@@ -37,11 +38,11 @@ docker build --target test -t wechat-dot-bridge-test .
 docker build --target runtime -t wechat-dot-bridge .
 ```
 
-Docker was unavailable in the authoring environment; these Docker builds have not been run here. Pin the official Node base image to an approved digest before production rollout. The committed npm lockfile pins jose and integrity metadata; dependency install scripts are disabled.
+Docker was unavailable in the authoring environment; these Docker builds have not been run here. Pin the official Node base image to an approved digest before production rollout. The committed npm lockfile pins jose, openid-client, qrcode, their transitive dependencies and integrity metadata; dependency install scripts are disabled.
 
 After approved configuration/secret provisioning and setting the live gate, `npm run preflight` parses local configuration, JWKS and TLS key/certificate without network calls. It does not verify the certificate hostname/chain against a real client or validate host registration.
 
-Compose defaults to publishing `127.0.0.1:8443`, so it is not reachable from ChatGPT by default. For an approved public deployment, set `BRIDGE_PUBLISH_BIND=0.0.0.0` and `BRIDGE_PUBLISH_PORT=443`, with firewall rules and DNS appropriate to the deployment. The app terminates TLS itself on container port 8443; forward TCP directly. Do not put a plaintext reverse proxy in front: the server ignores X-Forwarded-Proto and requires an actual TLS socket and exact public Host header.
+Compose defaults to publishing `127.0.0.1:8443`, so it is not reachable from ChatGPT by default. For an approved public deployment, set `BRIDGE_PUBLISH_BIND=0.0.0.0` and `BRIDGE_PUBLISH_PORT=443`, with firewall rules and DNS appropriate to the deployment. The app terminates TLS itself on container port 8443; forward TCP directly. An existing reverse proxy can connect to the app over HTTPS with certificate verification and the exact public Host/SNI, or TCP can be forwarded directly. A plaintext upstream does not work: the app ignores X-Forwarded-Proto and requires an actual TLS socket and exact public Host header. Preserve existing vhosts and services. Do not change public bindings/firewalls without the corresponding deployment approval.
 
 ```
 docker compose up -d --build
@@ -52,7 +53,29 @@ The healthcheck connects locally with the configured TLS hostname and validates 
 
 ## 4. Owner-only QR binding
 
-The admin endpoints accept an actual IdP-issued admin bearer token over TLS and never cookies/query-token authentication. Obtain that token only through the approved administrative IdP client. There is no bundled interactive IdP authorization UI or token-issuing endpoint; choosing/provisioning that client remains a deployment prerequisite. Do not give admin tokens to the ordinary MCP host client.
+Enable the optional owner web UI only after the separate confidential IdP client and secure secret provisioning are approved. See [exact Auth0 settings](AUTH.md#owner-web-admin-client-v03). Open `/admin`, click login, complete the external owner authentication, then explicitly create a QR. The UI displays the actual scanned account and requires its exact ID before confirmation; use revoke to cancel a wrong-account scan. Login itself creates no QR and enables no binding. The UI's cookie is accepted only by its own form routes; JSON admin APIs remain bearer-only.
+
+The fixed callback is `/admin/oauth/callback`. Disable caching and all request-query, cookie, Authorization-header and body logging for admin routes at every proxy/CDN/APM layer. OAuth code/state in the standard callback query must not be recorded. Do not enable debug HTTP logging. A future isolated Nginx admin location can use this template after reviewing the actual upstream certificate and changing the example hostname:
+
+```nginx
+location /admin {
+    access_log off;
+    error_log /dev/null;
+    proxy_cache off;
+    proxy_pass https://127.0.0.1:8443;
+    proxy_set_header Host bridge.example.invalid;
+    proxy_ssl_server_name on;
+    proxy_ssl_name bridge.example.invalid;
+    proxy_ssl_verify on;
+    proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;
+}
+```
+
+Nginx error logs can include the callback query on upstream failures, so this admin-only location suppresses those entries too. Keep generic application/health diagnostics separately; do not enable request debug traces to diagnose login. `proxy_cache off` overrides inherited proxy caching. Review the CDN/APM logging and cache policy independently.
+
+The `/mcp`, health and resource-metadata routes also need the verified HTTPS upstream. This snippet does not change any server, replace an existing vhost or establish CDN logging policy. Always run `nginx -t` before an approved graceful reload. A readiness-only host remains inactive until explicitly switched to the reviewed gateway.
+
+For approved server-side automation, the original JSON admin API accepts actual IdP-issued admin bearer tokens over TLS; never put those tokens into a browser, URL or chat. Do not give admin scope to the ordinary MCP host client.
 
 All requests below are POST JSON on the public bridge origin:
 
@@ -62,9 +85,9 @@ All requests below are POST JSON on the public bridge origin:
 4. If requested, same poll route with `verifyCode`; never log the code
 5. `/admin/link/confirm`, body `{ "requestId": "...", "scannerId": "EXACT_RETURNED_ID" }`
 
-Show qrContent only in a trusted owner interface; treat it as opaque data, not HTML or an arbitrary URL to fetch. QR content and bot tokens must not be relayed through MCP tool output. The QR owner must inspect and confirm the exact scanner identity. An arbitrary person scanning a leaked QR does not become trusted automatically. The local login attempt expires after five minutes; restart preserves that deadline.
+Show qrContent only in a trusted owner interface; treat it as opaque data, not HTML or an arbitrary URL to fetch. QR content and bot tokens must not be relayed through MCP tool output. The QR owner must inspect and confirm the exact scanner identity. An arbitrary person scanning a leaked QR does not become trusted automatically. The QR-link attempt expires after five minutes; encrypted restart state preserves that deadline. OAuth login transactions and browser sessions are in memory and are lost on restart.
 
-The handler begins polling only after the owner-confirmed binding is atomically persisted. No route accepts an arbitrary user-supplied principal or sender allowlist.
+The handler begins polling only after the owner-confirmed binding is atomically persisted **and** a nonempty approved callback allowlist is configured. No route accepts an arbitrary user-supplied principal or sender allowlist.
 
 ## 5. Connect and prove the exact dot path
 

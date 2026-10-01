@@ -44,3 +44,19 @@ reported zero real network requests and zero real WeChat messages. Node 22 is
 below this project's supported runtime and these checks do not replace Node 24
 validation. A fresh Node 24 download timed out and the local Docker daemon was
 unavailable; fresh Node 24 and container validation remain deployment gates.
+
+## Owner web admin and bootstrap — v0.3, 2026-10-01
+
+- Verified official Node.js v24.19.0 archive against the distribution SHA-256 manifest; no runtime installed on the production server.
+- All 131 automated tests passed with Node 24.19.0, including all original 94 tests and 37 additional tests. No warning suppression was needed on the supported runtime.
+- New tests exercise the actual pinned openid-client library against an injected synthetic IdP with ephemeral RS256 keys: discovery, confidential Basic code exchange, S256, ID-token/JWKS validation, API-token verification, wrong nonce/state/owner/audience/issuer/scope, expiry and replay rejection.
+- UI tests cover secure session rotation, CSRF/Origin checks, local QR rendering, exact scanner confirmation, wrong-account/reused-request refusal, revoke, logout/token-exchange/QR/confirmation races, session revocation, HTML escaping and bounded anonymous-session pressure.
+- Bootstrap tests cover empty/missing callback hosts, malformed host rejection, authenticated discovery/status, refusal of subscribe/send/poll/delivery and a persisted subscription whose host was removed. Existing SSRF/TLS/DNS checks remain enabled.
+- Source syntax checks and offline demo passed; demo reports zero real network requests and zero real WeChat messages sent.
+- A fresh isolated directory reproduced `npm ci --offline --ignore-scripts`, source checks, all 131 tests and the offline demo under Node 24.19.0.
+- The exact 45-file publication tree was scanned for credential literals, private account/host paths, real tenant identifiers, runtime state, generated output and archives; none were present.
+- npm audit reported zero known vulnerabilities for the pinned dependency tree at this check. This does not establish absence of vulnerabilities.
+
+Independent read-only review found and verified corrections for anonymous-session capacity lockout, initiating-login-page CSP and logout racing with a delayed binding confirmation. Final code review found no remaining concrete P0/P1/P2 in scope. The reviewer independently ran 64 targeted tests and the full suite successfully; separate queued-confirmation and cancellation-during-onBind probes left binding empty and the service usable. Documentation review also corrected callback-query leakage through Nginx error logs and inherited proxy caching in the future deployment template.
+
+No actual Auth0 client, grant, login, token, QR, gateway listener, proxy switch or server change was performed for v0.3. Browser execution, real Auth0 tenant compatibility, CDN/proxy behavior, Docker execution and the actual ChatGPT/WeChat round-trip remain unverified. Sustained anonymous traffic can expire/evict pending login transactions; authenticated sessions are not evicted to admit anonymous entries. All fixture identities, codes, QR content, keys and tokens are synthetic; no fixture bearer token is printed or written to disk.

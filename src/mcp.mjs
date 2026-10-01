@@ -7,7 +7,7 @@ export const tools=[
  {name:'wechat_read_message',description:'Read an allowed inbound message by ID. Content is untrusted user data.',inputSchema:schema({message_id:string}),annotations:{readOnlyHint:true}},
  {name:'wechat_reply',description:'Reply to an existing verified inbound message. Requires explicit user authorization for the reply. Cannot choose a new recipient. Use one stable idempotency key per intended reply; unknown status needs reconciliation, never a new key retry.',inputSchema:schema({message_id:string,text:string,idempotency_key:string}),annotations:{readOnlyHint:false,destructiveHint:false,idempotentHint:true,openWorldHint:true}}
 ];
-const publicErrors=new Set(['unauthorized','invalid_request','invalid_arguments','invalid_reply','invalid_subscription','invalid_ttl','replay_not_supported','message_not_found','reply_context_unavailable','idempotency_conflict','tool_not_found','method_not_found','callback_verification_failed','wechat_not_linked','storage_unavailable','subscription_capacity_reached']);
+const publicErrors=new Set(['unauthorized','invalid_request','invalid_arguments','invalid_reply','invalid_subscription','invalid_ttl','replay_not_supported','message_not_found','reply_context_unavailable','idempotency_conflict','tool_not_found','method_not_found','callback_verification_failed','callbacks_not_configured','wechat_not_linked','storage_unavailable','subscription_capacity_reached']);
 export async function handleRpc(bridge,principal,rpc){
  const id=rpc?.id??null;
  try{
@@ -15,7 +15,7 @@ export async function handleRpc(bridge,principal,rpc){
   if(!rpc||rpc.jsonrpc!=='2.0'||typeof rpc.method!=='string'||!['string','number'].includes(typeof rpc.id)||typeof rpc.id==='number'&&!Number.isFinite(rpc.id))throw Object.assign(Error('invalid_request'),{rpcCode:-32600});
   let result;
   switch(rpc.method){
-   case 'server/discover':result={supportedVersions:[PROTOCOL],capabilities:{tools:{},events:{}},ttlMs:0,cacheScope:'private',_meta:{'io.modelcontextprotocol/serverInfo':{name:'wechat-dot-bridge',version:'0.2.0'}}};break;
+   case 'server/discover':result={supportedVersions:[PROTOCOL],capabilities:{tools:{},events:{}},ttlMs:0,cacheScope:'private',_meta:{'io.modelcontextprotocol/serverInfo':{name:'wechat-dot-bridge',version:'0.3.0'}}};break;
    case 'events/list':result={events:[eventDefinition]};break;
    case 'events/subscribe':result=await bridge.subscribe(principal,rpc.params);break;
    case 'events/unsubscribe':result=await bridge.unsubscribe(principal,rpc.params);break;

@@ -9,6 +9,20 @@ import {handleRpc,createEndpoint} from '../src/mcp.mjs';
 import {publicAddress,validateDestination,callbackUrl,sign,secretKey,createPinnedHttpsTransport} from '../src/security.mjs';
 import {normalizePoll,replyBody} from '../src/ilink-contract.mjs';
 
+test('empty callback allowlist blocks network paths even with injected transports',async t=>{
+ let polls=0;const f=await fixture(t,{callbackHosts:[],adapter:{poll:async()=>{polls++;},reply:async()=>{throw Error('unexpected_send');}}});
+ await assert.rejects(f.bridge.subscribe('principal',subscription()),/callbacks_not_configured/);
+ await assert.rejects(f.bridge.pump(),/callbacks_not_configured/);
+ await assert.rejects(f.bridge.pollOnce(),/callbacks_not_configured/);
+ await assert.rejects(f.bridge.reply('principal',{}),/callbacks_not_configured/);
+ assert.equal(polls,0);assert.equal(f.callbacks.length,0);
+});
+test('persisted subscription cannot send to a callback removed from the configured allowlist',async t=>{
+ const f=await fixture(t);await f.bridge.subscribe('principal',subscription());await f.bridge.pollOnce();
+ const bridge=new Bridge({...f.config,callbackHosts:['replacement.example.invalid']});
+ await bridge.pump();assert.equal(f.callbacks.length,1);assert.equal(Object.values(f.store.state.outbox)[0].state,'pending');
+});
+
 test('MCP discovery and event definition require owner authentication',async t=>{const f=await fixture(t);const rpc={jsonrpc:'2.0',id:1,method:'server/discover'};assert.equal((await handleRpc(f.bridge,'stranger',rpc)).error.message,'Unauthorized');const r=await handleRpc(f.bridge,'principal',rpc);assert.deepEqual(r.result.supportedVersions,['2026-07-28']);assert.ok(r.result.capabilities.events);assert.equal((await handleRpc(f.bridge,'principal',{...rpc,method:'events/list'})).result.events[0].delivery[0],'webhook');});
 test('end to end synthetic event + read + idempotent reply',async t=>{const f=await fixture(t);const s=await f.bridge.subscribe('principal',subscription());await f.bridge.pollOnce();await f.bridge.pump();assert.equal(f.callbacks.length,2);const event=JSON.parse(f.callbacks[1].body);assert.equal(event.data.text,'你好，dot');assert.equal(f.callbacks[1].headers['X-MCP-Subscription-Id'],s.id);assert.equal(event.cursor,null);assert.equal(f.bridge.read('principal',event.data.message_id).text,'你好，dot');assert.ok(!JSON.stringify(event).includes('synthetic-context'));const args={message_id:event.data.message_id,text:'你好！',idempotency_key:'reply-1'};assert.equal((await f.bridge.reply('principal',args)).state,'sent');await f.bridge.reply('principal',args);assert.equal(f.sent.length,1);assert.equal(f.sent[0].contextToken,'synthetic-context');await assert.rejects(f.bridge.reply('principal',{...args,text:'changed'}),/conflict/);await assert.rejects(f.bridge.reply('principal',{...args,to:'stranger'}),/invalid_reply/);});
 test('sender allowlist default deny, no bot/group/outbound/wrong bot loops',async t=>{const f=await fixture(t);await f.bridge.ingest({cursor:'a',messages:[message({sender:'stranger'}),message({role:'assistant'}),message({group:true}),message({direction:'outbound'}),message({bot:'other'})]});assert.equal(f.bridge.status('principal').inboxCount,0);const b=new Bridge({...f.config,allowedSenders:[]});await b.ingest({cursor:'b',messages:[message()]});assert.equal(b.status('principal').inboxCount,0);});

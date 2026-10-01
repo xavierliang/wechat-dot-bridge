@@ -10,7 +10,8 @@ export function createRequestHandler({application,publicUrl,shutdownSignal}){
   function send(output){if(!res.destroyed){res.writeHead(output.status,{...output.headers,'strict-transport-security':'max-age=31536000'});res.end(output.body);}}
   try{
    if(req.socket.encrypted!==true||req.headers.host!==host){send({status:400,body:'{"error":"invalid_origin"}'});req.resume();return;}
-   if(typeof req.url!=='string'||!req.url.startsWith('/')||req.url.includes('?')||req.url.includes('#')){send({status:400,body:'{"error":"invalid_path"}'});req.resume();return;}
+   const oauthCallback=req.method==='GET'&&req.url?.startsWith('/admin/oauth/callback?');
+   if(typeof req.url!=='string'||!req.url.startsWith('/')||req.url.startsWith('//')||req.url.length>8192||req.url.includes('\\')||req.url.includes('?')&&!oauthCallback||req.url.includes('#')){send({status:400,body:'{"error":"invalid_path"}'});req.resume();return;}
    if(req.headers['content-length']&&(!/^\d+$/.test(req.headers['content-length'])||Number(req.headers['content-length'])>MAX_BODY)){send({status:413,body:'{"error":"body_too_large"}'});req.resume();return;}
    const chunks=[];let size=0;
    for await(const c of req){size+=c.length;if(size>MAX_BODY){send({status:413,body:'{"error":"body_too_large"}'});return;}chunks.push(c);}
