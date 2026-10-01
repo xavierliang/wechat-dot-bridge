@@ -3,6 +3,34 @@ import assert from 'node:assert/strict';
 import {adminFixture,mcpInput,ORIGIN,OWNER} from './admin-fixtures.mjs';
 
 const requestId=body=>body.match(/name="requestId" value="([^"]+)"/)?.[1];
+test('only query-free admin form pages use same-origin referrer policy',async t=>{
+ const f=await adminFixture(t),b=f.browser();
+ const page=await b.request('/admin');assert.equal(page.headers['referrer-policy'],'same-origin');
+ const redirect=await b.request('/admin/login','POST');assert.equal(redirect.status,303);assert.equal(redirect.headers['referrer-policy'],'no-referrer');
+ const url=f.issuer.authorize(redirect.headers.location);
+ const callback=await b.request(url.pathname+url.search);assert.equal(callback.status,303);assert.equal(callback.headers['referrer-policy'],'no-referrer');
+ assert.equal((await b.request('/admin')).headers['referrer-policy'],'same-origin');
+ for(const path of ['/admin?code=synthetic&state=synthetic','/admin/oauth/callback?code=synthetic&state=synthetic']){
+  const denied=await b.request(path);assert.equal(denied.status,400);assert.equal(denied.headers['referrer-policy'],'no-referrer');
+  assert.ok(!denied.body.includes('code=synthetic'));
+ }
+});
+test('login continues to reject missing, null and cross-site origins before discovery',async t=>{
+ const f=await adminFixture(t),b=f.browser();await b.request('/admin');
+ for(const headers of [{origin:undefined},{origin:'null'},{origin:'https://evil.invalid'},{'sec-fetch-site':'cross-site'},{'sec-fetch-site':'same-site'},{cookie:''}]){
+  const denied=await b.request('/admin/login','POST',{}, {headers});assert.equal(denied.status,403);assert.equal(denied.headers['referrer-policy'],'no-referrer');
+ }
+ assert.equal((await b.request('/admin/login','POST',{csrf:'wrong'})).status,403);
+ assert.equal(f.issuer.requests.length,0);assert.equal(f.upstream.length,0);
+ assert.equal((await b.request('/admin/login','POST')).status,303);
+});
+test('expired admin page fails closed and refresh establishes a new login session',async t=>{
+ const f=await adminFixture(t),b=f.browser();await b.request('/admin');const old=b.cookie;
+ f.advance(300001);
+ const denied=await b.request('/admin/login','POST');assert.equal(denied.status,403);assert.ok(denied.body.includes('href="/admin"'));assert.equal(f.issuer.requests.length,0);
+ const fresh=await b.request('/admin');assert.equal(fresh.status,200);assert.equal(fresh.headers['referrer-policy'],'same-origin');assert.notEqual(b.cookie,old);
+ assert.equal((await b.request('/admin/login','POST')).status,303);assert.equal(f.upstream.length,0);
+});
 test('public admin page has only login controls; all binding operations require a session and POST',async t=>{
  const f=await adminFixture(t),b=f.browser(),r=await b.request('/admin');
  assert.equal(r.status,200);assert.ok(!r.body.includes('synthetic-scanner'));assert.equal(f.upstream.length,0);assert.equal(f.issuer.requests.length,0);

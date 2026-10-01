@@ -17,6 +17,10 @@ const securityHeaders = {
 };
 const response = (status, body = '', headers = {}) => ({status, headers:{...securityHeaders,...headers}, body});
 const redirect = (location, headers = {}) => response(303, '', {location,...headers});
+// A no-referrer document serializes a native form POST's Origin as null.
+// Only query-free GET /admin pages need same-origin form referrers; protocol
+// callbacks, redirects and errors keep no-referrer so code/state cannot leak.
+const adminFormPage = output => ({...output,headers:{...output.headers,'referrer-policy':'same-origin'}});
 const page = body => `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>WeChat bridge 管理</title><style>body{font:16px/1.6 system-ui;max-width:760px;margin:3rem auto;padding:0 1rem;color:#202b35}button,input{font:inherit;padding:.5rem;margin:.3rem 0}button{cursor:pointer}code{overflow-wrap:anywhere}img{max-width:100%}.notice{padding:1rem;background:#eef3f7}form{margin:1rem 0}label{display:block}</style><main><h1>WeChat bridge 管理</h1>${body}</main></html>`;
 function parseCookie(headers) {
  if (headers.cookie === undefined) return undefined;
@@ -114,12 +118,12 @@ export function createAdminUI({config, auth, oauth, dispatch, status, now = Date
     }
     if(path===ADMIN_PATH){
      if(method!=='GET')return response(405,'',{'allow':'GET'});
-     if(s?.token){try{return await render(id,s);}catch{drop(id);s=undefined;}}
+     if(s?.token){try{return adminFormPage(await render(id,s));}catch{drop(id);s=undefined;}}
      if(!s){({id,s}=fresh());}
-     return response(200,page('<p>只有预先配置的 owner 可以管理此桥接。登录不会自动创建微信二维码或绑定账号。</p>'+form(s,'/admin/login','通过身份提供方登录')+form(s,'/admin/logout','取消登录 / 清除此会话')),{'set-cookie':cookie(id,300)});
+     return adminFormPage(response(200,page('<p>只有预先配置的 owner 可以管理此桥接。登录不会自动创建微信二维码或绑定账号。</p>'+form(s,'/admin/login','通过身份提供方登录')+form(s,'/admin/logout','取消登录 / 清除此会话')),{'set-cookie':cookie(id,300)}));
     }
     if(method!=='POST')return response(405,'',{'allow':'POST'});
-    if(!s || !live(id,s) || headers.origin!==origin || (headers['sec-fetch-site'] && headers['sec-fetch-site']!=='same-origin'))return response(403,page('<p>请求已拒绝，请从管理页重试。</p>'));
+    if(!s || !live(id,s) || headers.origin!==origin || (headers['sec-fetch-site'] && headers['sec-fetch-site']!=='same-origin'))return response(403,page('<p>请求已拒绝，请从管理页重试。</p><p><a href="/admin">返回管理页并刷新状态</a></p>'));
     if(!/^application\/x-www-form-urlencoded(?:;|$)/i.test(headers['content-type']??'') || typeof body!=='string' || Buffer.byteLength(body)>8192)throw Error('invalid_form');
     const values=new URLSearchParams(body);
     for(const key of values.keys())if(values.getAll(key).length!==1)throw Error('invalid_form');
