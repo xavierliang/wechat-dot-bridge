@@ -23,7 +23,9 @@ export function callbackUrl(raw, allowedHosts) {
  return u;
 }
 export async function validateDestination(raw, allowedHosts, resolve=lookup) {
- const u=callbackUrl(raw,allowedHosts), addresses=await resolve(u.hostname,{all:true,verbatim:true});
+ // Resolve the same family the socket can use. Dual-stack public services may
+ // advertise AAAA records, but this transport never connects over IPv6.
+ const u=callbackUrl(raw,allowedHosts), addresses=await resolve(u.hostname,{family:4,all:true,verbatim:true});
  if(!addresses.length||addresses.some(x=>!publicAddress(x.address))) throw Error('callback_address_rejected');
  return {u,address:addresses[0].address};
 }
