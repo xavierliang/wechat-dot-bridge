@@ -1,5 +1,6 @@
 import * as oidc from 'openid-client';
 import {createRestrictedHttpsTransport} from './security.mjs';
+import {markLoginFailure,oauthFailureReason,ownerFailureReason} from './login-diagnostics.mjs';
 
 export const ADMIN_PATH = '/admin';
 export const ADMIN_CALLBACK_PATH = '/admin/oauth/callback';
@@ -33,7 +34,7 @@ export function createAdminOAuth(config, clientSecret, {transport} = {}) {
     if (endpoint.origin !== issuer.origin || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw Error('oauth_metadata_rejected');
    }
    return client;
-  })().catch(() => {pending = undefined; throw Error('oauth_unavailable');});
+  })().catch(error => {pending = undefined; throw markLoginFailure(Error('oauth_unavailable'),oauthFailureReason(error));});
   return pending;
  }
  return {
@@ -48,16 +49,18 @@ export function createAdminOAuth(config, clientSecret, {transport} = {}) {
    }).toString();
   },
   async exchange(url, transaction) {
+   try {
    const client = await getClient();
    const tokens = await oidc.authorizationCodeGrant(client, url, {
     expectedState:transaction.state, expectedNonce:transaction.nonce,
     pkceCodeVerifier:transaction.verifier, idTokenExpected:true,
    }, {resource:config.publicUrl});
    const claims = tokens.claims();
-   if (!claims || claims.iss !== config.issuer || claims.sub !== config.ownerSubject || typeof tokens.access_token !== 'string' || tokens.token_type?.toLowerCase() !== 'bearer' || !Number.isSafeInteger(claims.exp)) throw Error('owner_login_rejected');
+   if (!claims || claims.iss !== config.issuer || claims.sub !== config.ownerSubject || typeof tokens.access_token !== 'string' || tokens.token_type?.toLowerCase() !== 'bearer' || !Number.isSafeInteger(claims.exp)) throw markLoginFailure(Error('owner_login_rejected'),claims&&claims.sub!==config.ownerSubject?ownerFailureReason(claims.sub,config.ownerSubject):'id_response_invalid');
    // ID tokens and refresh tokens never leave this function. API access tokens
    // still undergo the independent resource-server signature/aud/scope checks.
    return {accessToken:tokens.access_token, idExpiresAt:claims.exp * 1000};
+   } catch(error) {throw markLoginFailure(Error('oauth_exchange_failed'),oauthFailureReason(error));}
   },
  };
 }

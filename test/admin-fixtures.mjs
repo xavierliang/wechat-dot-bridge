@@ -54,6 +54,7 @@ export async function fakeIssuer(options={}) {
   assert.equal(body.get('grant_type'),'authorization_code');assert.equal(body.get('redirect_uri'),ORIGIN+'/admin/oauth/callback');
   assert.equal(createHash('sha256').update(body.get('code_verifier')).digest('base64url'),entry.code_challenge);
   assert.equal(body.get('resource'),RESOURCE);
+  if(options.tokenError)return {status:401,headers:{'content-type':'application/json'},body:JSON.stringify({error:options.tokenError,error_description:options.tokenErrorDescription??'synthetic provider detail'})};
   if(options.tokenGate)await options.tokenGate();
   const now=Math.floor(Date.now()/1000);
   let id=await jwt({iss:ISSUER,sub:OWNER,aud:CLIENT_ID,iat:now,exp:now+3600,nonce:entry.nonce,...options.idClaims},'JWT');
@@ -66,11 +67,11 @@ export async function fakeIssuer(options={}) {
 export async function adminFixture(t,options={}) {
  const issuer=await fakeIssuer(options.issuer),dir=await mkdtemp(join(tmpdir(),'wechat-admin-test-'));
  const store=await Store.open(dir,KEY);let time=Date.now();
- const config={publicUrl:RESOURCE,issuer:ISSUER,ownerSubject:OWNER,adminEnabled:true,adminClientId:CLIENT_ID,callbackHosts:options.callbackHosts??[],channelVersion:'0.1.0'};
+ const config={publicUrl:RESOURCE,issuer:ISSUER,ownerSubject:options.ownerSubject??OWNER,adminEnabled:true,adminClientId:CLIENT_ID,callbackHosts:options.callbackHosts??[],channelVersion:'0.1.0'};
  const verifier=await createResourceServerAuth({...config,resource:RESOURCE,jwks:issuer.jwks,revocationCheck:claims=>evaluateRevocation(claims,store.state.auth)});
  let authGate;const auth={...verifier,async authenticate(...args){await authGate?.();return verifier.authenticate(...args);}};
  const oauth=createAdminOAuth(config,SECRET,{transport:issuer.transport});
- const upstream=[],runtimes=[],callbacks=[],logs=[];let scanner='synthetic-scanner-A',qrSerial=0,qrGate;
+ const upstream=[],runtimes=[],callbacks=[],logs=[],diagnostics=[];let scanner='synthetic-scanner-A',qrSerial=0,qrGate;
  const qrTransport=async(url,request)=>{
   upstream.push({url,method:request.method});
   if(url.includes('get_bot_qrcode')){if(qrGate)await qrGate(request.signal);return packet({qrcode:'synthetic-private-qr-'+(++qrSerial),qrcode_img_content:'synthetic:qr-'+qrSerial});}
@@ -79,7 +80,7 @@ export async function adminFixture(t,options={}) {
   throw Error('unexpected_synthetic_wechat_request');
  };
  class Runtime {constructor({bridge}){this.bridge=bridge;this.signal=new AbortController().signal;runtimes.push(this);}start(){this.phase='running';}async stop(){this.phase='stopped';await this.bridge.queue;}}
- const app=await createApplication({config,store,auth,adminOAuth:oauth,adminClock:()=>time,Runtime,clientFactory:opts=>new ILinkClient({...opts,transport:qrTransport}),callbackTransport:async(...args)=>{callbacks.push(args);throw Error('unexpected_callback');},log:e=>logs.push(e)});
+ const app=await createApplication({config,store,auth,adminOAuth:oauth,adminClock:()=>time,adminDiagnostic:event=>diagnostics.push(event),Runtime,clientFactory:opts=>new ILinkClient({...opts,transport:qrTransport}),callbackTransport:async(...args)=>{callbacks.push(args);throw Error('unexpected_callback');},log:e=>logs.push(e)});
  t.after(async()=>{await app.close();await rm(dir,{recursive:true});});
  function browser() {
   let cookie='',csrf='',last;
@@ -93,7 +94,7 @@ export async function adminFixture(t,options={}) {
   }
   return {request,get cookie(){return cookie;},get csrf(){return csrf;},get last(){return last;},async begin(){await request('/admin');const r=await request('/admin/login','POST');assert.equal(r.status,303,r.body);return issuer.authorize(r.headers.location);},async login(){const url=await this.begin();const r=await request(url.pathname+url.search);assert.equal(r.status,303,r.body);assert.equal(r.headers.location,'/admin');const page=await request('/admin');assert.equal(page.status,200);return page;}};
  }
- return {app,store,issuer,config,upstream,runtimes,callbacks,logs,browser,advance:n=>{time+=n;},setScanner:n=>{scanner=n;},setQrGate:fn=>{qrGate=fn;},setAuthGate:fn=>{authGate=fn;}};
+ return {app,store,issuer,config,upstream,runtimes,callbacks,logs,diagnostics,browser,advance:n=>{time+=n;},setScanner:n=>{scanner=n;},setQrGate:fn=>{qrGate=fn;},setAuthGate:fn=>{authGate=fn;}};
 }
 
 export function mcpInput(token,method,params={}) {

@@ -1,4 +1,5 @@
 import {createHash} from 'node:crypto';
+import {markLoginFailure,apiJwtFailureReason,ownerFailureReason} from './login-diagnostics.mjs';
 
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const text = (value, max = 1024) => typeof value === 'string' && value.length > 0 && value.length <= max;
@@ -153,6 +154,7 @@ export async function createResourceServerAuth(config, {verifyJwt, now = () => D
   }
 
   async function authenticate(headers, {requiredScopes = defaultScopes} = {}) {
+    const denied=reason=>markLoginFailure(new AuthError(),reason);
     const required = scopes(requiredScopes, 'required_scopes', true);
     if (required.some(s => !scopesSupported.includes(s))) throw new TypeError('unknown_required_scope');
     const token = bearerToken(headers);
@@ -165,23 +167,30 @@ export async function createResourceServerAuth(config, {verifyJwt, now = () => D
         requiredClaims: ['iss', 'aud', 'sub', 'exp', 'iat', 'jti'],
         clockTolerance: tolerance, currentDate: new Date(seconds * 1000),
       });
-    } catch { throw new AuthError(); }
+    } catch(error) { throw denied(apiJwtFailureReason(error)); }
     const payload = checked?.payload, header = checked?.protectedHeader;
     // Defense in depth: also makes the trust contract of an injected verifier explicit.
-    if (!object(payload) || !object(header) || !allowedAlgorithms.includes(header.alg) || typeof header.typ !== 'string' || !['at+jwt', 'application/at+jwt'].includes(header.typ.toLowerCase()) || header.jku !== undefined || header.jwk !== undefined || header.x5u !== undefined) throw new AuthError();
-    if (payload.iss !== issuer || payload.sub !== ownerSubject || !(payload.aud === resource || Array.isArray(payload.aud) && payload.aud.every(a => typeof a === 'string') && payload.aud.includes(resource))) throw new AuthError();
-    if (!Number.isSafeInteger(payload.iat) || !Number.isSafeInteger(payload.exp) || payload.iat > seconds + tolerance || payload.exp <= seconds - tolerance || payload.exp <= payload.iat || payload.exp - payload.iat > maxLifetime || !text(payload.jti, 256)) throw new AuthError();
-    if (payload.nbf !== undefined && (!Number.isSafeInteger(payload.nbf) || payload.nbf > seconds + tolerance)) throw new AuthError();
-    if (typeof payload.scope !== 'string' || payload.scope.length > 4096) throw new AuthError();
+    if (!object(payload) || !object(header) || !allowedAlgorithms.includes(header.alg) || header.jku !== undefined || header.jwk !== undefined || header.x5u !== undefined) throw denied('api_token_invalid');
+    if (typeof header.typ !== 'string' || !['at+jwt', 'application/at+jwt'].includes(header.typ.toLowerCase())) throw denied('api_type_invalid');
+    if (payload.iss !== issuer) throw denied('api_issuer_invalid');
+    if (payload.sub !== ownerSubject) throw denied(ownerFailureReason(payload.sub,ownerSubject,'api'));
+    if (!(payload.aud === resource || Array.isArray(payload.aud) && payload.aud.every(a => typeof a === 'string') && payload.aud.includes(resource))) throw denied('api_audience_invalid');
+    if (!Number.isSafeInteger(payload.iat) || !Number.isSafeInteger(payload.exp) || payload.exp <= payload.iat) throw denied('api_lifetime_invalid');
+    if (payload.iat > seconds + tolerance) throw denied('api_not_yet_valid');
+    if (payload.exp <= seconds - tolerance) throw denied('api_expired');
+    if (payload.exp - payload.iat > maxLifetime) throw denied('api_lifetime_excessive');
+    if (!text(payload.jti, 256)) throw denied('api_jti_missing');
+    if (payload.nbf !== undefined && (!Number.isSafeInteger(payload.nbf) || payload.nbf > seconds + tolerance)) throw denied('api_not_yet_valid');
+    if (typeof payload.scope !== 'string' || payload.scope.length > 4096) throw denied('api_scope_invalid');
     let granted;
-    try { granted = scopes(payload.scope === '' ? [] : payload.scope.split(' '), 'token_scopes', true); } catch { throw new AuthError(); }
+    try { granted = scopes(payload.scope === '' ? [] : payload.scope.split(' '), 'token_scopes', true); } catch { throw denied('api_scope_invalid'); }
     const claims = Object.freeze({issuer, subject: ownerSubject, principal: ownerPrincipal, jti: payload.jti, issuedAt: payload.iat, expiresAt: payload.exp, scopes: granted});
     // A persistent source must decide on EVERY request. No success cache and no
     // reliance on upstream login cookies, a previous tool call, or WeChat state.
     let active = false;
-    try { active = await revocationCheck(claims); } catch { throw new AuthError(); }
-    if (active !== true) throw new AuthError();
-    if (required.some(scope => !granted.includes(scope))) throw new AuthError('insufficient_scope', 403, required);
+    try { active = await revocationCheck(claims); } catch { throw denied('api_revocation_rejected'); }
+    if (active !== true) throw denied('api_revocation_rejected');
+    if (required.some(scope => !granted.includes(scope))) throw markLoginFailure(new AuthError('insufficient_scope', 403, required),'api_scope_missing');
     return Object.freeze({principal: ownerPrincipal, issuer, scopes: granted, tokenId: payload.jti, issuedAt: payload.iat, expiresAt: payload.exp});
   }
   return Object.freeze({authenticate, ownerPrincipal, protectedResourceMetadata, metadataUrl, metadataPath, challenge, errorResponse});

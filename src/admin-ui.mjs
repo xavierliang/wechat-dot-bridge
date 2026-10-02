@@ -2,6 +2,7 @@ import {randomBytes} from 'node:crypto';
 import QRCode from 'qrcode';
 import {equal} from './security.mjs';
 import {ADMIN_PATH, ADMIN_CALLBACK_PATH} from './admin-oauth.mjs';
+import {markLoginFailure,loginFailureReason,providerFailureReason,safeLoginDiagnostic} from './login-diagnostics.mjs';
 
 const COOKIE = '__Host-bridge_admin';
 const random = () => randomBytes(32).toString('base64url');
@@ -35,7 +36,7 @@ function parseCookie(headers) {
 // Opaque, bounded, server-side sessions. No bearer/ID/refresh token, PKCE
 // verifier is put in cookies, HTML, localStorage, URLs or logs. The standard
 // authorization redirect carries one-use state/nonce and a PKCE challenge.
-export function createAdminUI({config, auth, oauth, dispatch, status, now = Date.now}) {
+export function createAdminUI({config, auth, oauth, dispatch, status, now = Date.now, diagnostic=safeLoginDiagnostic}) {
  const origin = new URL(config.publicUrl).origin, sessions = new Map();
  const csp=securityHeaders['content-security-policy'].replace("form-action 'self'",`form-action 'self' ${new URL(config.issuer).origin}`);
  const response=(status,body='',headers={})=>({status,headers:{...securityHeaders,'content-security-policy':csp,...headers},body});
@@ -93,7 +94,8 @@ export function createAdminUI({config, auth, oauth, dispatch, status, now = Date
   handles(path) {return routes.has(path.split('?')[0]);},
   async handle(input) {
    const {method,headers={},body='',secure=false}=input;
-   let id,s;
+   let id,s,stage='request';
+   const fail=(reason,message='invalid_callback')=>{throw markLoginFailure(Error(message),reason);};
    try {
     if(!secure)return response(400,page('<p>需要 HTTPS。</p>'));
     if(typeof input.path!=='string' || input.path.length>8192 || input.path.includes('#'))throw Error('invalid_request');
@@ -101,14 +103,22 @@ export function createAdminUI({config, auth, oauth, dispatch, status, now = Date
     if(url.origin!==origin || !routes.has(path) || (path!==ADMIN_CALLBACK_PATH && url.search))throw Error('invalid_request');
     prune();id=parseCookie(headers);s=sessions.get(id);
     if(path===ADMIN_CALLBACK_PATH){
-     if(method!=='GET' || !s || !live(id,s))throw Error('invalid_callback');
+     stage='callback';
+     if(method!=='GET')fail('request_rejected');
+     if(!id)fail('callback_cookie_missing');
+     if(!s || !live(id,s))fail('callback_session_unavailable');
      const transaction=s.transaction;s.transaction=undefined; // consume before any await, even on denial
-     if(!transaction || transaction.expires<=now())throw Error('invalid_callback');
+     if(!transaction)fail('callback_transaction_missing');
+     if(transaction.expires<=now())fail('callback_transaction_expired');
      const allowed=new Set(['code','state','iss','session_state','error','error_description','error_uri']);
-     for(const name of url.searchParams.keys())if(!allowed.has(name)||url.searchParams.getAll(name).length!==1)throw Error('invalid_callback');
-     if(!equal(url.searchParams.get('state')??'',transaction.state)||!url.searchParams.get('code')||url.searchParams.has('error'))throw Error('invalid_callback');
+     for(const name of url.searchParams.keys())if(!allowed.has(name)||url.searchParams.getAll(name).length!==1)fail('callback_parameters_rejected');
+     if(!equal(url.searchParams.get('state')??'',transaction.state))fail('callback_state_mismatch');
+     if(url.searchParams.has('error'))fail(providerFailureReason(url.searchParams.get('error')));
+     if(!url.searchParams.get('code'))fail('callback_code_missing');
+     stage='oauth_exchange';
      const tokens=await oauth.exchange(url,transaction);
-     if(!live(id,s) || transaction.expires<=now())throw Error('login_expired');
+     if(!live(id,s) || transaction.expires<=now())fail('login_expired','login_expired');
+     stage='api_token';
      const identity=await auth.authenticate({authorization:'Bearer '+tokens.accessToken},{requiredScopes:['bridge:admin']});
      if(!live(id,s) || identity.principal!==auth.ownerPrincipal)throw Error('login_required');
      const expires=Math.min(now()+SESSION_MS,identity.expiresAt*1000,tokens.idExpiresAt);
@@ -143,12 +153,14 @@ export function createAdminUI({config, auth, oauth, dispatch, status, now = Date
      return redirect(ADMIN_PATH,{'set-cookie':cookie('',0)});
     }
     if(path==='/admin/login'){
-     if(s.token || s.transaction)throw Error('login_already_pending');
+     stage='oauth_begin';
+     if(s.token || s.transaction)fail('login_already_pending','login_already_pending');
      const transaction={state:random(),nonce:random(),verifier:random(),expires:now()+TRANSACTION_MS};s.transaction=transaction;
      const location=await oauth.begin(transaction);
      if(!live(id,s) || s.transaction!==transaction || transaction.expires<=now())throw Error('login_expired');
      return redirect(location,{'content-security-policy':csp});
     }
+    stage='admin_action';
     await authorize(id,s);
     const action=path.slice('/admin/ui/'.length), args=Object.fromEntries([...values].filter(([k])=>k!=='csrf'));
     const result=await operation(id,s,'/admin/link/'+action,args,input);
@@ -159,10 +171,13 @@ export function createAdminUI({config, auth, oauth, dispatch, status, now = Date
      return await render(id,s,{qr});
     }
     return await render(id,s,{notice:action==='revoke'?'当前微信绑定或扫码已撤销。':''});
-   } catch {
+   } catch(error) {
     // Do not leak OAuth response bodies, code/state/verifier, tokens, upstream
     // QR data, file paths or exception messages into pages or diagnostics.
-    return response(400,page('<p>登录或操作失败，可能已过期、权限不符或身份提供方不可用。</p><p><a href="/admin">返回管理页并刷新状态</a></p>'));
+    const requestId=randomBytes(8).toString('hex');
+    const fallback={request:'request_rejected',callback:'callback_parameters_rejected',oauth_begin:'oauth_unavailable',oauth_exchange:'oauth_exchange_failed',api_token:'api_token_invalid',admin_action:'request_rejected'}[stage];
+    try{diagnostic({stage,reason:loginFailureReason(error,fallback),requestId});}catch{}
+    return response(400,page('<p>登录或操作失败，可能已过期、权限不符或身份提供方不可用。</p><p><a href="/admin">返回管理页并刷新状态</a></p><p>诊断编号：<code>'+requestId+'</code></p>'));
    }
   },
   close(){closed=true;for(const id of sessions.keys())drop(id);},

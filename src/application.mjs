@@ -14,7 +14,7 @@ const response=(status,value)=>({status,headers:{'content-type':'application/jso
 const clearMessages=state=>{state.seenMessages??={};for(const id of Object.keys(state.inbox))state.seenMessages[id]=true;state.bot=null;state.cursor='';state.inbox={};state.subscriptions={};state.outbox={};state.quarantine={};};
 // Dependency injection is exclusively for offline tests. Main wires only the
 // concrete OAuth verifier, restricted HTTPS transports and persistent Store.
-export async function createApplication({config,store,jwks,auth:injectedAuth,clientFactory=opts=>new ILinkClient(opts),callbackTransport,Runtime=PollingRuntime,log=safeLog,adminOAuth,adminClock}){
+export async function createApplication({config,store,jwks,auth:injectedAuth,clientFactory=opts=>new ILinkClient(opts),callbackTransport,Runtime=PollingRuntime,log=safeLog,adminOAuth,adminClock,adminDiagnostic}){
  if(config.adminEnabled&&!adminOAuth)throw Error('admin_oauth_required');
  const callbacksConfigured=Array.isArray(config.callbackHosts)&&config.callbackHosts.length>0;
  if(!store.state.auth)store.state.auth={enabled:true,revokedBefore:0,revokedTokenIds:[]};
@@ -55,7 +55,7 @@ export async function createApplication({config,store,jwks,auth:injectedAuth,cli
   read(p,id){return this.required().read(p,id);},reply(p,args){if(!callbacksConfigured)throw Error('callbacks_not_configured');return this.required().reply(p,args);},subscribe(p,args){if(!callbacksConfigured)throw Error('callbacks_not_configured');return this.required().subscribe(p,args);},unsubscribe(p,args){return this.required().unsubscribe(p,args);}
  };
  const endpoint=createEndpoint(facade,{authenticate:auth.authenticate,allowedOrigins:[new URL(config.publicUrl).origin],authFailure:auth.errorResponse});
- const adminUi=config.adminEnabled?createAdminUI({config,auth,oauth:adminOAuth,dispatch:handle,status:()=>facade.status(owner),...(adminClock?{now:adminClock}:{})}):undefined;
+ const adminUi=config.adminEnabled?createAdminUI({config,auth,oauth:adminOAuth,dispatch:handle,status:()=>facade.status(owner),...(adminClock?{now:adminClock}:{}),...(adminDiagnostic?{diagnostic:adminDiagnostic}:{})}):undefined;
  async function handle(input){
   if(closed)return response(503,{error:'unavailable'});
   if(inFlight>=32)return response(429,{error:'busy'});inFlight++;
