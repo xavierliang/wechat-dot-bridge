@@ -41,7 +41,7 @@ export async function createApplication({config,store,jwks,auth:injectedAuth,cli
  async function reconcile(){
   if(closed||runtime||!callbacksConfigured)return;
   const binding=await linker.getActiveBinding({principal:owner});if(!binding||!principalActive(owner)||runtime||closed)return;
-  const client=clientFactory({channelVersion:config.channelVersion,baseUrl:binding.baseUrl,token:binding.token,botId:binding.botId});
+  const client=clientFactory({channelVersion:config.channelVersion,baseUrl:binding.baseUrl,token:binding.token,botId:binding.botId,allowedSenders:[binding.scannerId]});
   let nextRuntime;
   bridge=new Bridge({store,owner,bot:binding.botId,allowedSenders:[binding.scannerId],callbackHosts:config.callbackHosts,mode:'configured',
    authorize:p=>principalActive(p)&&accepting&&!nextRuntime?.signal.aborted,

@@ -1,7 +1,8 @@
 import {randomBytes} from 'node:crypto';
 import {createRestrictedHttpsTransport} from './security.mjs';
 import {normalizePoll,replyBody} from './ilink-contract.mjs';
-import {markPollFailure,pollFailureDetails,pollResponseShape} from './poll-diagnostics.mjs';
+import {markPollFailure,pollFailureDetails,pollResponseShape,safePollBatchDiagnostic} from './poll-diagnostics.mjs';
+import {parseIlinkJson} from './ilink-json.mjs';
 
 export const ILINK_BASE_URL='https://ilinkai.weixin.qq.com';
 export const ILINK_ALLOWED_HOSTS=Object.freeze(['ilinkai.weixin.qq.com']);
@@ -30,14 +31,17 @@ function applicationFailure(data) {
 }
 
 export class ILinkClient {
- #transport;#hosts;#baseUrl;#token;#botId;#version;#clientVersion;
- constructor({transport,channelVersion='0.1.0',allowedHosts=ILINK_ALLOWED_HOSTS,baseUrl=ILINK_BASE_URL,token,botId}={}) {
+ #transport;#hosts;#baseUrl;#token;#botId;#version;#clientVersion;#senders;#batchDiagnostic;
+ constructor({transport,channelVersion='0.1.0',allowedHosts=ILINK_ALLOWED_HOSTS,baseUrl=ILINK_BASE_URL,token,botId,allowedSenders,onPollDiagnostic=safePollBatchDiagnostic}={}) {
   this.#baseUrl=validateIlinkBaseUrl(baseUrl,allowedHosts);this.#hosts=[...allowedHosts];
   this.#clientVersion=encodeClientVersion(channelVersion);this.#version=channelVersion;
   if(token!==undefined&&!string(token,16384))throw new ILinkError('ilink_credentials_invalid');
   if(botId!==undefined&&!string(botId,256))throw new ILinkError('ilink_credentials_invalid');
   if(transport!==undefined&&typeof transport!=='function')throw new ILinkError('ilink_transport_invalid');
   this.#transport=transport??createRestrictedHttpsTransport({allowedHosts:this.#hosts,timeoutMs:40000,maxResponseBytes:1048576});
+  if(allowedSenders!==undefined&&(!Array.isArray(allowedSenders)||allowedSenders.length>100||allowedSenders.some(sender=>!string(sender,256))))throw new ILinkError('ilink_credentials_invalid');
+  if(typeof onPollDiagnostic!=='function')throw new ILinkError('ilink_transport_invalid');
+  this.#senders=allowedSenders===undefined?undefined:new Set(allowedSenders);this.#batchDiagnostic=onPollDiagnostic;
   this.#token=token;this.#botId=botId;
  }
  validateBaseUrl(raw){return validateIlinkBaseUrl(raw,this.#hosts);}
@@ -62,7 +66,7 @@ export class ILinkClient {
   if(response.status>=300&&response.status<400)throw failure('ilink_redirect_rejected',{delivery},{stage:'http',reason:'redirect_rejected'});
   if(response.status<200||response.status>=300)throw failure('ilink_http_failed',{retryable:!delivery&&(response.status===429||response.status>=500),delivery},{stage:'http',reason:'http_failed'});
   if(typeof response.body!=='string'||Buffer.byteLength(response.body)>1048576)throw failure('ilink_response_invalid',{delivery},{stage:'response',reason:'response_invalid'});
-  let parsed;try{parsed=JSON.parse(response.body);}catch{throw failure('ilink_response_invalid',{delivery},{stage:'json',reason:'json_invalid'});}
+  let parsed;try{parsed=parseIlinkJson(response.body);}catch{throw failure('ilink_response_invalid',{delivery},{stage:'json',reason:'json_invalid'});}
   if(!object(parsed))throw failure('ilink_response_invalid',{delivery},{stage:'json',reason:'response_invalid'});
   return parsed;
  }
@@ -76,7 +80,10 @@ export class ILinkClient {
    // An empty cursor is a long-poll timeout/no-change value, never a reset.
    const next=data.get_updates_buf===undefined||data.get_updates_buf===''?cursor:data.get_updates_buf;
    Object.assign(diagnostic,{stage:'normalize',reason:'fields_invalid'});
-   try{return normalizePoll({...data,get_updates_buf:next},this.#botId);}catch{throw new ILinkError('ilink_response_invalid');}
+   const counts={};let outcome='rejected';
+   try{const batch=normalizePoll({...data,get_updates_buf:next},this.#botId,{allowedSenders:this.#senders,counts});outcome='mapped';return batch;}
+   catch{throw new ILinkError('ilink_response_invalid');}
+   finally{if(counts.received>0){try{this.#batchDiagnostic({outcome,...counts});}catch{}}}
   }catch(error){throw markPollFailure(error,{...diagnostic,...pollFailureDetails(error)});}
  }
  poll(cursor='',options={}){return this.getUpdates({cursor,...options});}

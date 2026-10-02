@@ -29,3 +29,12 @@ export function pollFailureDiagnostic(error,elapsedMs) {
 export function safePollDiagnostic(details,write=line=>process.stderr.write(line+'\n')) {
  write(JSON.stringify({time:new Date().toISOString(),event:'wechat_poll_failed',stage:'poll',reason:'unclassified',code:'poll_failed',...sanitize(details)}));
 }
+
+// Only bounded counts and fixed reasons. Mapping success is not persistence or
+// delivery success; an invalid ID marks the batch rejected before cursor commit.
+const batchCounters=['received','normalized','non_user','group','recipient','sender','unsupported_content','malformed','invalid_id','missing_context','invalid_timestamp'];
+export function safePollBatchDiagnostic(details,write=line=>process.stderr.write(line+'\n')) {
+ const output={time:new Date().toISOString(),event:'wechat_poll_batch',outcome:details?.outcome==='mapped'?'mapped':'rejected'};
+ for(const key of batchCounters)if(Number.isInteger(details?.[key])&&details[key]>=0&&details[key]<=1048576)output[key]=details[key];
+ write(JSON.stringify(output));
+}

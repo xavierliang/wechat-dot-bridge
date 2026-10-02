@@ -96,3 +96,25 @@ sink does not alter retry or stop behavior.
 The existing 40-second transport deadline and exponential backoff are unchanged.
 A deadline remains a classified failure pending observed production evidence;
 this change does not claim every timeout is a successful empty poll.
+
+## Lossless inbound IDs and filtering
+
+Tencent defines inbound `message_id` as uint64. The adapter uses Node 24's native
+JSON reviver `context.source` to retain the original numeric token, then validates
+decimal string IDs against the uint64 range with BigInt. It never reconstructs a
+large ID from a rounded JavaScript Number. Numeric and quoted representations
+normalize to the same decimal identity for durable deduplication; adjacent large
+IDs remain distinct. Existing safe-integer identities remain unchanged.
+
+The bound scanner is filtered before content/ID validation, and Bridge still
+checks sender authorization before ingest. A supported inbound text message with
+an invalid ID rejects the whole batch before cursor persistence. Unsupported
+content, non-user/group/wrong-recipient messages and unapproved senders are
+filtered with fixed reason counts. Each nonempty batch emits `wechat_poll_batch`
+with `mapped` or `rejected` and bounded counts only; it contains no ID, identity,
+text, context token or cursor. A mapped batch has not yet been persisted or
+delivered. Missing context/timestamp and malformed structures remain rejected or
+filtered rather than weakening the schema.
+
+These diagnostics cannot recover messages already skipped by an earlier version.
+The bridge does not reset or rewind a durable upstream cursor automatically.
