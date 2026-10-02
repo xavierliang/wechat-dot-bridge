@@ -175,6 +175,18 @@ test('scanner identity is escaped and never trusted as HTML',async t=>{
  const f=await adminFixture(t),b=f.browser();await b.login();const r=await b.request('/admin/ui/begin','POST');f.setScanner('<img src=x onerror=alert(1)>');const page=await b.request('/admin/ui/poll','POST',{requestId:requestId(r.body)});
  assert.equal(page.status,200);assert.ok(page.body.includes('&lt;img'));assert.ok(!page.body.includes('<img src=x'));
 });
+test('email-shaped scanner IDs remain readable without enabling CDN decoding scripts',async t=>{
+ const f=await adminFixture(t),b=f.browser();await b.login();f.setScanner('synthetic-owner@im.wechat');
+ const begun=await b.request('/admin/ui/begin','POST'),id=requestId(begun.body);
+ const candidate=await b.request('/admin/ui/poll','POST',{requestId:id});
+ assert.ok(candidate.body.includes('<!--email_off--><code>synthetic-owner@im.wechat</code><!--/email_off-->'));
+ assert.ok(candidate.body.includes('<!--email_off--><code>synthetic-bot</code><!--/email_off-->'));
+ assert.ok(candidate.headers['content-security-policy'].includes("default-src 'none'"));
+ assert.ok(!candidate.headers['content-security-policy'].includes('script-src'));
+ assert.ok(!candidate.body.includes('<script'));
+ const bound=await b.request('/admin/ui/confirm','POST',{requestId:id,scannerId:'synthetic-owner@im.wechat'});
+ assert.equal(bound.status,200);assert.equal(f.store.state.link.binding.scannerId,'synthetic-owner@im.wechat');
+});
 test('empty callback allowlist permits authenticated MCP discovery/status, refuses subscribe/reply, and starts no runtime',async t=>{
  const f=await adminFixture(t),token=await f.issuer.access({},'bridge:mcp');await f.app.start();
  for(const method of ['server/discover','tools/list','events/list'])assert.ok(JSON.parse((await f.app.handle(mcpInput(token,method))).body).result);

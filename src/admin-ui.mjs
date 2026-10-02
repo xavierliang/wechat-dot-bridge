@@ -76,7 +76,10 @@ export function createAdminUI({config, auth, oauth, dispatch, status, now = Date
   const hidden=link.requestId?`<input type="hidden" name="requestId" value="${escape(link.requestId)}">`:'';
   let body=`<p class="notice">${state.callbacksConfigured?'事件回调域名已配置。':'启动准备模式：事件回调域名尚未配置，订阅、消息轮询和发送均关闭。'}</p><p>微信状态：<strong>${escape(link.status)}</strong>；运行状态：${escape(state.phase)}</p>`;
   if(notice)body+=`<p>${escape(notice)}</p>`;
-  if(link.scannerId)body+=`<p>实际扫码账号：<code>${escape(link.scannerId)}</code></p><p>机器人：<code>${escape(link.botId)}</code></p>`;
+  // WeChat IDs contain @ but are exact identity labels, not email addresses.
+  // Keep Cloudflare's email rewrite off these escaped owner-only labels; the
+  // page CSP intentionally disallows its injected email decoding script.
+  if(link.scannerId)body+=`<p>实际扫码账号：<!--email_off--><code>${escape(link.scannerId)}</code><!--/email_off--></p><p>机器人：<!--email_off--><code>${escape(link.botId)}</code><!--/email_off--></p>`;
   if(qr)body+=`<p>仅用你要绑定的微信账号扫描；扫码后还必须确认实际账号。</p><img alt="微信绑定二维码" src="${qr}">`;
   if(!link.linked && !['waiting','scanned','needs_verification','awaiting_owner_confirmation'].includes(link.status))body+=form(s,'/admin/ui/begin','创建新的微信绑定二维码');
   if(['waiting','scanned','needs_verification'].includes(link.status)){
