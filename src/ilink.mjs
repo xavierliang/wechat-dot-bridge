@@ -3,6 +3,7 @@ import {createRestrictedHttpsTransport} from './security.mjs';
 import {normalizePoll,replyBody} from './ilink-contract.mjs';
 import {markPollFailure,pollFailureDetails,pollResponseShape,safePollBatchDiagnostic} from './poll-diagnostics.mjs';
 import {parseIlinkJson} from './ilink-json.mjs';
+import {sendResponseShape,sendDiagnostic,safeSendDiagnostic} from './send-diagnostics.mjs';
 
 export const ILINK_BASE_URL='https://ilinkai.weixin.qq.com';
 export const ILINK_ALLOWED_HOSTS=Object.freeze(['ilinkai.weixin.qq.com']);
@@ -31,8 +32,8 @@ function applicationFailure(data) {
 }
 
 export class ILinkClient {
- #transport;#hosts;#baseUrl;#token;#botId;#version;#clientVersion;#senders;#batchDiagnostic;
- constructor({transport,channelVersion='0.1.0',allowedHosts=ILINK_ALLOWED_HOSTS,baseUrl=ILINK_BASE_URL,token,botId,allowedSenders,onPollDiagnostic=safePollBatchDiagnostic}={}) {
+ #transport;#hosts;#baseUrl;#token;#botId;#version;#clientVersion;#senders;#batchDiagnostic;#sendDiagnostic;
+ constructor({transport,channelVersion='0.1.0',allowedHosts=ILINK_ALLOWED_HOSTS,baseUrl=ILINK_BASE_URL,token,botId,allowedSenders,onPollDiagnostic=safePollBatchDiagnostic,onSendDiagnostic=safeSendDiagnostic}={}) {
   this.#baseUrl=validateIlinkBaseUrl(baseUrl,allowedHosts);this.#hosts=[...allowedHosts];
   this.#clientVersion=encodeClientVersion(channelVersion);this.#version=channelVersion;
   if(token!==undefined&&!string(token,16384))throw new ILinkError('ilink_credentials_invalid');
@@ -40,8 +41,8 @@ export class ILinkClient {
   if(transport!==undefined&&typeof transport!=='function')throw new ILinkError('ilink_transport_invalid');
   this.#transport=transport??createRestrictedHttpsTransport({allowedHosts:this.#hosts,timeoutMs:40000,maxResponseBytes:1048576});
   if(allowedSenders!==undefined&&(!Array.isArray(allowedSenders)||allowedSenders.length>100||allowedSenders.some(sender=>!string(sender,256))))throw new ILinkError('ilink_credentials_invalid');
-  if(typeof onPollDiagnostic!=='function')throw new ILinkError('ilink_transport_invalid');
-  this.#senders=allowedSenders===undefined?undefined:new Set(allowedSenders);this.#batchDiagnostic=onPollDiagnostic;
+  if(typeof onPollDiagnostic!=='function'||typeof onSendDiagnostic!=='function')throw new ILinkError('ilink_transport_invalid');
+  this.#senders=allowedSenders===undefined?undefined:new Set(allowedSenders);this.#batchDiagnostic=onPollDiagnostic;this.#sendDiagnostic=onSendDiagnostic;
   this.#token=token;this.#botId=botId;
  }
  validateBaseUrl(raw){return validateIlinkBaseUrl(raw,this.#hosts);}
@@ -88,12 +89,26 @@ export class ILinkClient {
  }
  poll(cursor='',options={}){return this.getUpdates({cursor,...options});}
  async sendText({to,contextToken,text,clientId,signal}) {
-  let body;try{body=replyBody({to,contextToken,text,clientId},this.#version);}catch{throw new ILinkError('ilink_reply_fields_required');}
-  const data=await this.#request('/ilink/bot/sendmessage',{data:body,authenticated:true,signal,delivery:'unknown'});
-  if(applicationFailure(data))return {accepted:false,state:'rejected',code:'ilink_send_rejected'};
-  // Upstream currently tolerates missing ret. This adapter deliberately does not
-  // claim success without an explicit acknowledgement, and never retries sends.
-  return data.ret===0?{accepted:true,state:'sent'}:{accepted:false,state:'unknown'};
+  const started=Date.now(),diagnostic={stage:'request',outcome:'unknown',reason:'unclassified',acknowledgement:'none'};
+  try{
+   let body;try{body=replyBody({to,contextToken,text,clientId},this.#version);}catch{throw new ILinkError('ilink_reply_fields_required');}
+   const data=await this.#request('/ilink/bot/sendmessage',{data:body,authenticated:true,signal,delivery:'unknown',diagnostic});
+   Object.assign(diagnostic,sendResponseShape(data),{stage:'application',reason:'fields_invalid'});
+   const codeField=v=>v===undefined||Number.isInteger(v)&&v>=-2147483648&&v<=2147483647;
+   if(!codeField(data.ret)||!codeField(data.errcode)||data.errmsg!==undefined&&typeof data.errmsg!=='string'||diagnostic.messageIdPresent&&!diagnostic.messageIdValid)throw new ILinkError('ilink_response_invalid',{delivery:'unknown'});
+   diagnostic.reason='upstream_error';
+   if(data.ret===-14||data.errcode===-14){diagnostic.outcome='rejected';throw new ILinkError('ilink_session_expired',{delivery:'unknown'});}
+   if(applicationFailure(data)){Object.assign(diagnostic,{outcome:'rejected',code:'ilink_send_rejected'});return {accepted:false,state:'rejected',code:'ilink_send_rejected'};}
+   // Omitted ret alone is not an acknowledgement. A positive lossless server ID
+   // can acknowledge it only in the absence of other application error signals.
+   if(data.ret===0||diagnostic.messageIdValid&&!diagnostic.errmsgNonempty){
+    Object.assign(diagnostic,{outcome:'acknowledged',reason:'acknowledged',acknowledgement:data.ret===0?'ret_zero':'message_id'});
+    return {accepted:true,state:'sent'};
+   }
+   diagnostic.reason=diagnostic.errmsgNonempty?'ambiguous_error':'acknowledgement_missing';
+   return {accepted:false,state:'unknown'};
+  }catch(error){Object.assign(diagnostic,pollFailureDetails(error),{code:error?.code});throw error;}
+  finally{try{this.#sendDiagnostic(sendDiagnostic({...diagnostic,elapsedMs:Date.now()-started}));}catch{}}
  }
  reply(args){return this.sendText(args);}
  async requestQr({signal}={}) {
