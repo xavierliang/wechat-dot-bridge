@@ -76,6 +76,7 @@ export function createAdminUI({config, auth, oauth, dispatch, status, now = Date
   const hidden=link.requestId?`<input type="hidden" name="requestId" value="${escape(link.requestId)}">`:'';
   let body=`<p class="notice">${state.callbacksConfigured?'事件回调域名已配置。':'启动准备模式：事件回调域名尚未配置，订阅、消息轮询和发送均关闭。'}</p><p>微信状态：<strong>${escape(link.status)}</strong>；运行状态：${escape(state.phase)}</p>`;
   if(notice)body+=`<p>${escape(notice)}</p>`;
+  if(state.unapprovedCallbackHost)body+=`<p>实际订阅请求提供的回调域名（尚未批准或验证）：<code>${escape(state.unapprovedCallbackHost)}</code>。订阅仍被拒绝，消息收发仍关闭；管理员确认前不会连接此域名。</p>`;
   // WeChat IDs contain @ but are exact identity labels, not email addresses.
   // Keep Cloudflare's email rewrite off these escaped owner-only labels; the
   // page CSP intentionally disallows its injected email decoding script.

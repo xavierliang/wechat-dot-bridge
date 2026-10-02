@@ -8,6 +8,7 @@ import {createPinnedHttpsTransport} from './security.mjs';
 import {createEndpoint} from './mcp.mjs';
 import {safeLog} from './logging.mjs';
 import {createAdminUI} from './admin-ui.mjs';
+import {observedCallbackHost} from './callback-proposal.mjs';
 const object=x=>x&&typeof x==='object'&&!Array.isArray(x);
 const exact=(x,keys)=>object(x)&&Object.keys(x).every(k=>keys.includes(k));
 const response=(status,value)=>({status,headers:{'content-type':'application/json','cache-control':'no-store','referrer-policy':'no-referrer','x-content-type-options':'nosniff'},body:JSON.stringify(value)});
@@ -22,16 +23,16 @@ export async function createApplication({config,store,jwks,auth:injectedAuth,cli
  const owner=auth.ownerPrincipal;
  if(store.state.owner&&store.state.owner!==owner)throw Error('store_identity_mismatch');
  store.state.owner=owner;await store.save();
- let bridge=null,runtime=null,accepting=false,closed=false,inFlight=0;const accessController=new AbortController();
+ let bridge=null,runtime=null,accepting=false,closed=false,inFlight=0,callbackHostProposal=null;const accessController=new AbortController();
  const principalActive=p=>!closed&&!store.failed&&!store.closed&&store.state.auth.enabled===true&&p===owner;
  async function suspend(){accepting=false;if(runtime)await runtime.stop();if(bridge)await bridge.queue;runtime=null;bridge=null;}
  const callbacks=callbackTransport??createPinnedHttpsTransport(config.callbackHosts);
  const linker=new LinkingService({ownerPrincipal:owner,client:clientFactory({channelVersion:config.channelVersion}),loadSecret:async()=>store.state.link??null,
-  onRevoke:async()=>suspend(),
+  onRevoke:async()=>{callbackHostProposal=null;await suspend();},
   saveSecret:async(next,transition,signal)=>{
    if(signal?.aborted)throw Error('ilink_aborted');
    if(transition.type!=='revoke'&&!principalActive(owner))throw Error('access_revoked');
-   if(['bind','revoke'].includes(transition.type))await suspend();
+   if(['bind','revoke'].includes(transition.type)){callbackHostProposal=null;await suspend();}
    if(signal?.aborted)throw Error('ilink_aborted');
    if(transition.type!=='revoke'&&!principalActive(owner))throw Error('access_revoked');
    if(['bind','revoke'].includes(transition.type))clearMessages(store.state);
@@ -50,9 +51,21 @@ export async function createApplication({config,store,jwks,auth:injectedAuth,cli
  }
  const facade={
   check(p){if(!principalActive(p))throw Error('unauthorized');},
-  status(p){this.check(p);return {mode:callbacksConfigured?'configured':'bootstrap',callbacksConfigured,linked:!!store.state.link?.binding,connected:bridge?.lastPollAt?Date.now()-bridge.lastPollAt<120000&&runtime?.phase==='running':false,phase:callbacksConfigured?(runtime?.phase??'unlinked'):'awaiting_callback_configuration',inboxCount:Object.keys(store.state.inbox).length,pendingEvents:Object.values(store.state.outbox).filter(x=>x.state==='pending').length,quarantinedMessages:Object.keys(store.state.quarantine??{}).length,deadEvents:Object.values(store.state.outbox).filter(x=>x.state==='dead').length};},
+  status(p){this.check(p);return {mode:callbacksConfigured?'configured':'bootstrap',callbacksConfigured,unapprovedCallbackHost:!callbacksConfigured&&callbackHostProposal?.bindingRequestId===store.state.link?.binding?.requestId?callbackHostProposal?.host??null:null,linked:!!store.state.link?.binding,connected:bridge?.lastPollAt?Date.now()-bridge.lastPollAt<120000&&runtime?.phase==='running':false,phase:callbacksConfigured?(runtime?.phase??'unlinked'):'awaiting_callback_configuration',inboxCount:Object.keys(store.state.inbox).length,pendingEvents:Object.values(store.state.outbox).filter(x=>x.state==='pending').length,quarantinedMessages:Object.keys(store.state.quarantine??{}).length,deadEvents:Object.values(store.state.outbox).filter(x=>x.state==='dead').length};},
   required(){if(!bridge||!accepting)throw Error('wechat_not_linked');return bridge;},
-  read(p,id){return this.required().read(p,id);},reply(p,args){if(!callbacksConfigured)throw Error('callbacks_not_configured');return this.required().reply(p,args);},subscribe(p,args){if(!callbacksConfigured)throw Error('callbacks_not_configured');return this.required().subscribe(p,args);},unsubscribe(p,args){return this.required().unsubscribe(p,args);}
+  read(p,id){return this.required().read(p,id);},reply(p,args){if(!callbacksConfigured)throw Error('callbacks_not_configured');return this.required().reply(p,args);},
+  subscribe(p,args){
+   this.check(p);
+   if(!callbacksConfigured){
+    const binding=store.state.link?.binding,request=store.state.link?.request;
+    if(binding?.ownerPrincipal===p&&request?.status==='bound'&&request.id===binding.requestId){
+     try{callbackHostProposal={host:observedCallbackHost(args,binding),bindingRequestId:binding.requestId};}catch{}
+    }
+    // The empty allowlist still rejects every subscription and starts no I/O.
+    throw Error('callbacks_not_configured');
+   }
+   return this.required().subscribe(p,args);
+  },unsubscribe(p,args){return this.required().unsubscribe(p,args);}
  };
  const endpoint=createEndpoint(facade,{authenticate:auth.authenticate,allowedOrigins:[new URL(config.publicUrl).origin],authFailure:auth.errorResponse});
  const adminUi=config.adminEnabled?createAdminUI({config,auth,oauth:adminOAuth,dispatch:handle,status:()=>facade.status(owner),...(adminClock?{now:adminClock}:{}),...(adminDiagnostic?{diagnostic:adminDiagnostic}:{})}):undefined;

@@ -93,6 +93,8 @@ The handler begins polling only after the owner-confirmed binding is atomically 
 
 Connect the remote MCP server at the configured `/mcp` through the actual plugin management flow; authenticate with the owner identity. The protected-resource metadata is at `/.well-known/oauth-protected-resource/mcp`. Rescan tools/events after changes.
 
+When the callback allowlist is empty, an authenticated bound owner's valid `events/subscribe` attempt still fails with `callbacks_not_configured`. The bridge retains only the proposed hostname in process memory and exposes it as `unapprovedCallbackHost` in authenticated status and the owner page. It does not retain the full callback URL or signing secret, save a subscription, resolve DNS, send a challenge, poll WeChat or send messages. Malformed, wrong-owner, wrong-sender and unlinked attempts cannot set the proposal; revoke/relink/restart clears it. This is evidence from the actual host request, not permission or proof of destination ownership. Verify it against the legitimate dot workflow and obtain operator approval before updating the exact callback hostname allowlist. Then let the host retry the subscription with its actual URL and signing secret; normal DNS/TLS/SSRF and signed-challenge checks still apply.
+
 Verify all of the following against the real host:
 
 - MCP 2.0 protocol/version metadata and mirrored HTTP headers are accepted

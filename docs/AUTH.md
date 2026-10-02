@@ -43,6 +43,10 @@ The session pool is bounded at 128 entries. Anonymous pressure evicts prelogin s
 
 OpenAI's [authentication guide](https://developers.openai.com/plugins/build/auth) describes resource metadata, authorization-server discovery, PKCE S256, and resource-bound access tokens. Registration may use CIMD, DCR, or a predefined OAuth client. The IdP owns that choice. Copy the exact callback and client metadata document URLs from the actual connection-management interface; callback mode varies. Declare `bridge:mcp` on the plugin's OAuth security schemes. The ordinary plugin client should not receive administrative permission.
 
+For a manually provisioned Auth0 client operated by ChatGPT, use a separate third-party Regular Web Application with strict security controls, PKCE, an exact UI-observed callback, and a per-application user-delegated grant limited to `bridge:mcp`. Do not reuse the owner admin client or enable default grants for all third-party clients. As documented on 2026-10-02, Auth0's [strict third-party profile](https://auth0.com/docs/get-started/applications/third-party-applications/security-controls) does not support OIDC scopes, ID tokens or `/userinfo`; disable OIDC in the ChatGPT connector and use the bridge's verified OAuth access token. Do not request the IdP's entire advertised scope list. Refresh/offline access is a separate authorization decision; a connection without it may require reauthorization when its access token expires.
+
+Auth0 third-party login requires a [domain-level connection](https://auth0.com/docs/authenticate/identity-providers/promote-connections-to-domain-level). Promoting an existing login connection makes it available to all third-party applications in that tenant, while API access still needs its own grant. Inspect the actual setting and obtain approval for that tenant-level change; do not enable it silently or misclassify the external client as first-party to avoid the restriction.
+
 The [connection guide](https://developers.openai.com/plugins/deploy/connect-chatgpt) provides the host-side sequence:
 
 1. Prepare a reachable HTTPS `/mcp` endpoint or a supported development tunnel
