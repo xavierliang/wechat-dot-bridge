@@ -57,7 +57,7 @@ async function candidate(f){const start=await f.service.begin({principal});const
  }
  });
  test('malformed updates rejected, cursor remains owned by durable caller',async()=>{
- for(const data of [{ret:0,msgs:[],get_updates_buf:17},{ret:0,get_updates_buf:'next'},{ret:0,msgs:[null],get_updates_buf:'next'},{msgs:[],get_updates_buf:'next'}]){
+ for(const data of [{ret:0,msgs:[],get_updates_buf:17},{ret:0,msgs:null,get_updates_buf:'next'},{ret:0,msgs:[null],get_updates_buf:'next'},{msgs:{},get_updates_buf:'next'},{msgs:[],get_updates_buf:null}]){
   const f=network([packet(data)]);await assert.rejects(f.client.poll('unchanged'),/ilink_response_invalid/);
  }
  });
@@ -195,4 +195,24 @@ async function candidate(f){const start=await f.service.begin({principal});const
  await store.close();store=await Store.open(dir,key);f.restart();assert.equal((await f.service.status({principal})).status,'awaiting_owner_confirmation');
  await f.service.confirm(args);assert.equal((await f.service.getActiveBinding({principal})).token,TOKEN);
  await f.service.revoke(args);await store.close();store=await Store.open(dir,key);assert.equal(store.state.link.binding,null);assert.equal(store.state.link.request.candidate,undefined);
+ });
+
+ test('optional ret and msgs are accepted without losing the durable cursor',async()=>{
+ for(const data of [{},{ret:0},{msgs:[]},{errcode:0},{ret:0,errcode:0},{get_updates_buf:''}]){
+  const f=network([packet(data)]);
+  assert.deepEqual(await f.client.poll('keep-me'),{messages:[],cursor:'keep-me'});
+ }
+ const f=network([packet({get_updates_buf:'next'})]);
+ assert.deepEqual(await f.client.poll('previous'),{messages:[],cursor:'next'});
+ });
+ test('message-bearing response with omitted ret is still ingested',async()=>{
+ const m={message_id:19,message_type:1,message_state:2,from_user_id:'synthetic-scanner',to_user_id:'synthetic-bot',context_token:'synthetic-context',create_time_ms:1801300000000,item_list:[{type:1,text_item:{text:'synthetic hello'}}]};
+ const f=network([packet({msgs:[m],get_updates_buf:'next'})]);
+ const result=await f.client.poll('previous');
+ assert.equal(result.messages.length,1);assert.equal(result.messages[0].id,'19');assert.equal(result.cursor,'next');
+ });
+ test('optional fields do not hide nonzero or malformed application errors',async()=>{
+ for(const data of [{ret:1},{errcode:1},{ret:'0'},{errcode:'0'},{ret:null},{errcode:null},{ret:false},{errcode:false}]){
+  const f=network([packet(data)]);await assert.rejects(f.client.poll('keep-me'),/ilink_poll_failed/);
+ }
  });

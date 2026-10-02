@@ -1,6 +1,7 @@
 import {randomBytes} from 'node:crypto';
 import {createRestrictedHttpsTransport} from './security.mjs';
 import {normalizePoll,replyBody} from './ilink-contract.mjs';
+import {markPollFailure,pollFailureDetails,pollResponseShape} from './poll-diagnostics.mjs';
 
 export const ILINK_BASE_URL='https://ilinkai.weixin.qq.com';
 export const ILINK_ALLOWED_HOSTS=Object.freeze(['ilinkai.weixin.qq.com']);
@@ -47,30 +48,36 @@ export class ILinkClient {
   if(authenticated){if(!this.#token||!this.#botId)throw new ILinkError('ilink_credentials_required');headers.Authorization=`Bearer ${this.#token}`;}
   return headers;
  }
- async #request(path,{baseUrl=this.#baseUrl,method='POST',data,authenticated=false,signal,delivery}={}) {
+ async #request(path,{baseUrl=this.#baseUrl,method='POST',data,authenticated=false,signal,delivery,diagnostic={}}={}) {
   const base=this.validateBaseUrl(baseUrl);
   if(signal?.aborted)throw new ILinkError('ilink_aborted',{delivery});
   const headers=this.#headers({authenticated,json:method==='POST'});
   let response;
+  const failure=(code,options={},details={})=>markPollFailure(new ILinkError(code,options),{...diagnostic,...details});
   try{response=await this.#transport(new URL(path,base).toString(),{method,headers,body:method==='POST'?JSON.stringify(data):'',signal});}
-  catch{throw new ILinkError(signal?.aborted?'ilink_aborted':delivery?'ilink_send_unknown':'ilink_transport_failed',{retryable:!delivery&&!signal?.aborted,delivery});}
+  catch(error){throw failure(signal?.aborted?'ilink_aborted':delivery?'ilink_send_unknown':'ilink_transport_failed',{retryable:!delivery&&!signal?.aborted,delivery},{stage:'transport',reason:'transport_failed',...pollFailureDetails(error)});}
   if(signal?.aborted)throw new ILinkError('ilink_aborted',{delivery});
-  if(!object(response)||!Number.isInteger(response.status))throw new ILinkError('ilink_response_invalid',{delivery});
-  if(response.status>=300&&response.status<400)throw new ILinkError('ilink_redirect_rejected',{delivery});
-  if(response.status<200||response.status>=300)throw new ILinkError('ilink_http_failed',{retryable:!delivery&&(response.status===429||response.status>=500),delivery});
-  if(typeof response.body!=='string'||Buffer.byteLength(response.body)>1048576)throw new ILinkError('ilink_response_invalid',{delivery});
-  let parsed;try{parsed=JSON.parse(response.body);}catch{throw new ILinkError('ilink_response_invalid',{delivery});}
-  if(!object(parsed))throw new ILinkError('ilink_response_invalid',{delivery});
+  if(!object(response)||!Number.isInteger(response.status))throw failure('ilink_response_invalid',{delivery},{stage:'http',reason:'response_invalid'});
+  diagnostic.httpStatus=response.status;
+  if(response.status>=300&&response.status<400)throw failure('ilink_redirect_rejected',{delivery},{stage:'http',reason:'redirect_rejected'});
+  if(response.status<200||response.status>=300)throw failure('ilink_http_failed',{retryable:!delivery&&(response.status===429||response.status>=500),delivery},{stage:'http',reason:'http_failed'});
+  if(typeof response.body!=='string'||Buffer.byteLength(response.body)>1048576)throw failure('ilink_response_invalid',{delivery},{stage:'response',reason:'response_invalid'});
+  let parsed;try{parsed=JSON.parse(response.body);}catch{throw failure('ilink_response_invalid',{delivery},{stage:'json',reason:'json_invalid'});}
+  if(!object(parsed))throw failure('ilink_response_invalid',{delivery},{stage:'json',reason:'response_invalid'});
   return parsed;
  }
  async getUpdates({cursor='',signal}={}) {
   if(typeof cursor!=='string'||cursor.length>65536)throw new ILinkError('ilink_cursor_invalid');
-  const data=await this.#request('/ilink/bot/getupdates',{data:{get_updates_buf:cursor,base_info:this.#baseInfo()},authenticated:true,signal});
-  if(applicationFailure(data))throw new ILinkError('ilink_poll_failed',{retryable:true});
-  // An empty cursor is a long-poll timeout/no-change value, never a reset.
-  const next=data.get_updates_buf===undefined||data.get_updates_buf===''?cursor:data.get_updates_buf;
-  let batch;try{batch=normalizePoll({...data,get_updates_buf:next},this.#botId);}catch{throw new ILinkError('ilink_response_invalid');}
-  return batch;
+  const diagnostic={stage:'request'};
+  try{
+   const data=await this.#request('/ilink/bot/getupdates',{data:{get_updates_buf:cursor,base_info:this.#baseInfo()},authenticated:true,signal,diagnostic});
+   Object.assign(diagnostic,pollResponseShape(data),{stage:'application',reason:'upstream_error'});
+   if(applicationFailure(data))throw new ILinkError('ilink_poll_failed',{retryable:true});
+   // An empty cursor is a long-poll timeout/no-change value, never a reset.
+   const next=data.get_updates_buf===undefined||data.get_updates_buf===''?cursor:data.get_updates_buf;
+   Object.assign(diagnostic,{stage:'normalize',reason:'fields_invalid'});
+   try{return normalizePoll({...data,get_updates_buf:next},this.#botId);}catch{throw new ILinkError('ilink_response_invalid');}
+  }catch(error){throw markPollFailure(error,{...diagnostic,...pollFailureDetails(error)});}
  }
  poll(cursor='',options={}){return this.getUpdates({cursor,...options});}
  async sendText({to,contextToken,text,clientId,signal}) {

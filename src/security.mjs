@@ -2,6 +2,14 @@ import {createHmac, timingSafeEqual} from 'node:crypto';
 import {isIP} from 'node:net';
 import {lookup} from 'node:dns/promises';
 import {request} from 'node:https';
+import {markPollFailure,pollFailureDetails} from './poll-diagnostics.mjs';
+const networkReasons=new Map([['ENOTFOUND','dns_failed'],['EAI_AGAIN','dns_failed'],['ECONNREFUSED','tcp_failed'],['ECONNRESET','tcp_failed'],['ETIMEDOUT','timeout'],['ENETUNREACH','tcp_failed'],['EHOSTUNREACH','tcp_failed'],['ERR_TLS_CERT_ALTNAME_INVALID','tls_failed'],['CERT_HAS_EXPIRED','tls_failed'],['DEPTH_ZERO_SELF_SIGNED_CERT','tls_failed'],['SELF_SIGNED_CERT_IN_CHAIN','tls_failed'],['UNABLE_TO_VERIFY_LEAF_SIGNATURE','tls_failed'],['UNABLE_TO_GET_ISSUER_CERT_LOCALLY','tls_failed'],['ERR_SSL_WRONG_VERSION_NUMBER','tls_failed']]);
+const transportReasons=new Map([['callback_url_rejected','destination_rejected'],['callback_address_rejected','destination_rejected'],['timeout','timeout'],['aborted','aborted'],['aborted_or_timeout','timeout'],['redirect_rejected','redirect_rejected'],['response_failed','response_failed']]);
+function transportFailure(error,stage){
+ if(pollFailureDetails(error).stage)return error;
+ const reason=networkReasons.get(error?.code)??transportReasons.get(error?.message)??'transport_failed';
+ return markPollFailure(error,{stage:reason==='dns_failed'?'dns':stage,reason});
+}
 export function equal(a,b) { const x=Buffer.from(a), y=Buffer.from(b); return x.length===y.length && timingSafeEqual(x,y); }
 export function secretKey(secret) {
   if(typeof secret!=='string'||!/^whsec_[A-Za-z0-9+/]+={0,2}$/.test(secret)) throw Error('invalid_signing_secret');
@@ -41,24 +49,27 @@ export function createRestrictedHttpsTransport({allowedHosts=[],resolve=lookup,t
   if(signal?.aborted)throw Error('aborted');
   signal?.addEventListener('abort',onAbort,{once:true});
   const timer=setTimeout(()=>controller.abort(Error('timeout')),timeoutMs);
-  let rejectAbort;
+  let rejectAbort,stage='destination';
   const aborted=new Promise((_,reject)=>{rejectAbort=()=>reject(controller.signal.reason);controller.signal.addEventListener('abort',rejectAbort,{once:true});});
   try {
    const {u,address}=await Promise.race([validateDestination(url,allowedHosts,resolve),aborted]);
    if(controller.signal.aborted||Date.now()>=deadline)throw Error('timeout');
+   stage='transport';
    return await Promise.race([new Promise((resolveResult,reject)=>{
     const req=requestImpl(u,{method,headers:{...headers,host:u.host},signal:controller.signal,agent:false,family:4,autoSelectFamily:false,servername:u.hostname,rejectUnauthorized:true,
      lookup:(_host,opts,cb)=>opts?.all?cb(null,[{address,family:4}]):cb(null,address,4)},res=>{
+     stage='response';
      const chunks=[];let size=0;
      res.on('data',c=>{size+=c.length;if(size>maxResponseBytes)res.destroy(Error('response_too_large'));else chunks.push(c);});
-     res.on('error',()=>reject(Error('response_failed')));res.on('end',()=>{
-      if(res.statusCode>=300&&res.statusCode<400)return reject(Error('redirect_rejected'));
+     res.on('error',()=>reject(markPollFailure(Error('response_failed'),{stage:'response',reason:size>maxResponseBytes?'response_too_large':'response_failed',httpStatus:res.statusCode})));res.on('end',()=>{
+      if(res.statusCode>=300&&res.statusCode<400)return reject(markPollFailure(Error('redirect_rejected'),{stage:'http',reason:'redirect_rejected',httpStatus:res.statusCode}));
       resolveResult({status:res.statusCode,body:Buffer.concat(chunks).toString(),headers:res.headers??{}});
      });
     });
-    req.on('error',()=>reject(Error(controller.signal.aborted?'aborted_or_timeout':'transport_failed')));req.end(method==='GET'?undefined:body);
+    req.on('error',error=>reject(markPollFailure(Error(controller.signal.aborted?'aborted_or_timeout':'transport_failed'),{stage:'transport',reason:controller.signal.aborted?(signal?.aborted?'aborted':'timeout'):(networkReasons.get(error?.code)??'transport_failed')})));req.end(method==='GET'?undefined:body);
    }),aborted]);
-  }finally{clearTimeout(timer);signal?.removeEventListener('abort',onAbort);controller.signal.removeEventListener('abort',rejectAbort);}
+  }catch(error){throw transportFailure(error,stage);}
+  finally{clearTimeout(timer);signal?.removeEventListener('abort',onAbort);controller.signal.removeEventListener('abort',rejectAbort);}
  };
 }
 export function createPinnedHttpsTransport(allowedHosts,resolve=lookup,timeoutMs=10000){

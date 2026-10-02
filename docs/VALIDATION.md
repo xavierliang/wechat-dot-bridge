@@ -92,3 +92,11 @@ No actual Auth0 client, grant, login, token, QR, gateway listener, proxy switch 
 - ChatGPT completed the real OAuth consent/connection. Its installed personal plugin showed a connected primary account and discovered all three tools plus `wechat.message.received`. The existing dot was identified in the real UI. These observations establish OAuth/MCP discovery, not subscription delivery or a WeChat reply.
 - Callback-host proposal tests use synthetic requests and identities. They check hostname-only exposure, rejection of invalid envelopes/URLs/keys/owners/senders, unchanged encrypted state, no callback/WeChat I/O, and clearing on revocation. Runtime callback approval and the actual WeChat/dot round trip remain pending.
 - All 168 automated tests and all-source syntax checks passed under Node.js v24.19.0 before deployment.
+
+## Poll response compatibility and safe failure diagnostics — 2026-10-02
+
+- Verified the production image's iLink client, poll mapper and runtime match the formal checkout at `ad428e6`. Synthetic responses reproduced `ilink_response_invalid` when optional `ret` or `msgs` was omitted.
+- Polling now accepts those omissions, retains the prior cursor for an omitted/empty response cursor, and continues rejecting nonzero application errors, nulls and malformed types. Reply acknowledgements and authentication/SSRF/TLS restrictions remain unchanged.
+- Runtime failures carry only allowlisted classifications and bounded numeric/type metadata through transport and client wrappers. Regression tests cover DNS/TCP/TLS/deadline failures, redirects, size limits, HTTP/JSON/application/schema errors, injected sensitive fields, cancellation, recovery, backoff and logging-sink failure.
+- All 178 automated tests and all-source syntax checks passed under Node.js v24.19.0. The offline demo reported zero real network requests and zero real WeChat messages sent.
+- Code review checked the complete patch, including private WeakMap metadata, final log-field allowlists, cursor ownership, cancellation and the unchanged send/identity policies. These local results do not establish production connectivity or a completed WeChat/dot round trip.

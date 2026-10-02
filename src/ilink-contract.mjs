@@ -1,9 +1,11 @@
 // Pure DTO mapping only. No networking, QR login, tokens, or live adapter.
 export function normalizePoll(response,bot){
- if(response.ret!==0||(response.errcode!=null&&response.errcode!==0))throw Error(response.ret===-14||response.errcode===-14?'ilink_session_expired':'ilink_poll_failed');
- if(!Array.isArray(response.msgs)||typeof response.get_updates_buf!=='string')throw Error('ilink_invalid_response');
+ if((response.ret!==undefined&&response.ret!==0)||(response.errcode!==undefined&&response.errcode!==0))throw Error(response.ret===-14||response.errcode===-14?'ilink_session_expired':'ilink_poll_failed');
+ // Omitted default-valued fields are valid; explicit nulls/types still fail.
+ const msgs=response.msgs===undefined?[]:response.msgs;
+ if(!Array.isArray(msgs)||typeof response.get_updates_buf!=='string')throw Error('ilink_invalid_response');
  const messages=[];
- for(const m of response.msgs){
+ for(const m of msgs){
   if(m.message_type!==1||m.message_state!==2||m.group_id||m.to_user_id!==bot)continue;
   const text=(m.item_list??[]).filter(i=>i.type===1&&typeof i.text_item?.text==='string').map(i=>i.text_item.text).join('\n');
   if(!text||!m.context_token||!Number.isSafeInteger(m.message_id)||!Number.isFinite(m.create_time_ms)||typeof m.from_user_id!=='string')continue;

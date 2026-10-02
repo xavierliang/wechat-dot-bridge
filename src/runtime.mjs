@@ -1,8 +1,9 @@
 import {setTimeout as delay} from 'node:timers/promises';
+import {pollFailureDiagnostic,safePollDiagnostic} from './poll-diagnostics.mjs';
 const pause=(ms,signal)=>delay(ms,undefined,{signal});
 // Owns only runtime lifecycle. No constructor starts network work.
 export class PollingRuntime {
- constructor({bridge,wait=pause,onState=()=>{}}){this.bridge=bridge;this.wait=wait;this.onState=onState;this.controller=new AbortController();this.phase='idle';this.started=false;this.done=Promise.resolve();}
+ constructor({bridge,wait=pause,onState=()=>{},onDiagnostic=safePollDiagnostic}){this.bridge=bridge;this.wait=wait;this.onState=onState;this.onDiagnostic=onDiagnostic;this.controller=new AbortController();this.phase='idle';this.started=false;this.done=Promise.resolve();}
  get signal(){return this.controller.signal;}
  setPhase(phase){this.phase=phase;this.onState(phase);}
  start(){
@@ -12,9 +13,12 @@ export class PollingRuntime {
  async pollLoop(){
   let failures=0;
   while(!this.signal.aborted){
+   const started=performance.now();
    try{await this.bridge.pollOnce(this.signal);failures=0;this.setPhase('running');await this.wait(250,this.signal);}
    catch(e){
     if(this.signal.aborted)break;
+    // Diagnostics must never change polling, backoff or shutdown.
+    try{this.onDiagnostic(pollFailureDiagnostic(e,Math.round(performance.now()-started)));}catch{}
     if(['ilink_session_expired','storage_unavailable','inbox_capacity_reached','storage_capacity_reached','unauthorized','invalid_message','invalid_batch'].includes(e.code??e.message)){
      this.setPhase(e.code==='ilink_session_expired'?'relink_required':'blocked');this.controller.abort();break;
     }

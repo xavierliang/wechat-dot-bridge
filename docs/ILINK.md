@@ -74,3 +74,25 @@ Serve the challenge only through an explicitly requested authenticated secure-ow
 ## Verification
 
 `node --test test/ilink.test.mjs` runs synthetic transport/storage fixtures. Coverage includes protocol headers, cursor retention, cancellation, session expiry, unknown send outcomes, exact host validation, sanitized outputs/errors, owner isolation, confirmation identity, TTL/restart, atomic transition callbacks, and concurrent confirmation/revocation. Passing these tests does not verify account eligibility, Tencent availability or a production messaging connection.
+
+## Poll compatibility and diagnostics
+
+Successful getUpdates responses may omit `ret` and `msgs`. An omitted list is
+empty; an omitted or empty cursor preserves the durable cursor. Explicit nonzero
+application codes, nulls and malformed field types remain failures. Send
+acknowledgements still require explicit `ret: 0`.
+
+A failed runtime poll emits `wechat_poll_failed` followed by the existing phase
+event. Diagnostics use allowlisted stage, reason and error codes, elapsed
+milliseconds, HTTP status, bounded numeric `ret`/`errcode`, and field-type labels
+for `ret`, `errcode`, `msgs` and the cursor. Transport classifications survive the
+iLink wrapper, distinguishing DNS, TCP, TLS, deadline, destination, redirect,
+response-size, HTTP, JSON, application and normalization failures. Unknown errors
+stay `unclassified` or `transport_failed`; no raw error, cause, stack, URL, header,
+body, cursor, identity, token or message is logged. No new diagnostic endpoint is
+exposed. Cancellation during shutdown emits no failure diagnostic; a failed log
+sink does not alter retry or stop behavior.
+
+The existing 40-second transport deadline and exponential backoff are unchanged.
+A deadline remains a classified failure pending observed production evidence;
+this change does not claim every timeout is a successful empty poll.
