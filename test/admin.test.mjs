@@ -98,6 +98,33 @@ test('CSRF, Origin, fetch-site, duplicate fields and repeated form submissions c
  const begun=await b.request('/admin/ui/begin','POST');assert.equal(begun.status,200);assert.ok(begun.body.includes('data:image/png;base64,'));assert.equal(f.upstream.length,1);
  assert.equal((await b.request('/admin/ui/begin','POST',{csrf})).status,403);assert.equal(f.upstream.length,1);
 });
+test('QR form navigation retains a usable same-origin POST origin through every action',async t=>{
+ const f=await adminFixture(t),b=f.browser();await b.login();
+ // Native form POSTs from a no-referrer document carry Origin: null.
+ const post=async(path,values={})=>{
+  const origin=b.last.headers['referrer-policy']==='no-referrer'?'null':ORIGIN;
+  const page=await b.request(path,'POST',values,{headers:{origin}});
+  assert.equal(page.status,200,path);assert.equal(page.headers['cache-control'],'no-store');
+  assert.equal(page.headers['referrer-policy'],'same-origin');return page;
+ };
+ const begun=await post('/admin/ui/begin'),id=requestId(begun.body);assert.ok(id);
+ const challenge=await post('/admin/ui/challenge',{requestId:id});assert.ok(challenge.body.includes('data:image/png;base64,'));
+ const candidate=await post('/admin/ui/poll',{requestId:id});assert.ok(candidate.body.includes('synthetic-scanner-A'));
+ await post('/admin/ui/confirm',{requestId:id,scannerId:'synthetic-scanner-A'});
+ assert.equal(f.store.state.link.binding.scannerId,'synthetic-scanner-A');
+ await post('/admin/ui/revoke',{requestId:id});assert.equal(f.store.state.link.binding,null);
+ const logout=await b.request('/admin/logout','POST');assert.equal(logout.status,303);assert.equal(logout.headers['referrer-policy'],'no-referrer');
+ assert.equal(f.runtimes.length,0);assert.equal(f.callbacks.length,0);
+});
+test('QR form policy does not relax Origin, CSRF or query rejection',async t=>{
+ const f=await adminFixture(t),b=f.browser();await b.login();
+ for(const headers of [{origin:undefined},{origin:'null'},{origin:'https://evil.invalid'},{'sec-fetch-site':'same-site'}]){
+  const r=await b.request('/admin/ui/begin','POST',{}, {headers});assert.equal(r.status,403);assert.equal(r.headers['referrer-policy'],'no-referrer');
+ }
+ const csrf=await b.request('/admin/ui/begin','POST',{csrf:'wrong'});assert.equal(csrf.status,403);assert.equal(csrf.headers['referrer-policy'],'no-referrer');
+ const query=await b.request('/admin/ui/begin?code=synthetic&state=synthetic','POST');assert.equal(query.status,400);assert.equal(query.headers['referrer-policy'],'no-referrer');
+ assert.equal(f.upstream.length,0);
+});
 test('full UI QR candidate confirmation, account switch protection, unlink and logout remain owner-controlled',async t=>{
  const f=await adminFixture(t),b=f.browser();await b.login();const begun=await b.request('/admin/ui/begin','POST'),id=requestId(begun.body);
  assert.ok(id);const candidate=await b.request('/admin/ui/poll','POST',{requestId:id});assert.ok(candidate.body.includes('synthetic-scanner-A'));assert.equal(f.store.state.link.binding,null);
@@ -122,7 +149,7 @@ test('logout invalidates a pending code exchange without resurrecting a session'
 test('logout aborts an in-flight QR creation before encrypted binding state is saved',async t=>{
  const f=await adminFixture(t),b=f.browser();await b.login();let entered,release;const started=new Promise(r=>{entered=r;});
  f.setQrGate(signal=>{entered();return new Promise(r=>{signal.addEventListener('abort',r,{once:true});});});const pending=b.request('/admin/ui/begin','POST');await started;
- await b.request('/admin');assert.equal((await b.request('/admin/logout','POST')).status,303);assert.equal((await pending).status,400);assert.equal(f.store.state.link?.request??null,null);
+ const waiting=await b.request('/admin');assert.equal(waiting.headers['referrer-policy'],'same-origin');assert.ok(waiting.body.includes('退出并取消等待'));assert.equal((await b.request('/admin/logout','POST')).status,303);assert.equal((await pending).status,400);assert.equal(f.store.state.link?.request??null,null);
 });
 test('logout cancels confirmation paused at inner authorization and drains it before acknowledging',async t=>{
  const f=await adminFixture(t,{callbackHosts:['events.example.invalid']}),b=f.browser();await b.login();

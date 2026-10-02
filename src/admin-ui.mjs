@@ -19,7 +19,8 @@ const securityHeaders = {
 const response = (status, body = '', headers = {}) => ({status, headers:{...securityHeaders,...headers}, body});
 const redirect = (location, headers = {}) => response(303, '', {location,...headers});
 // A no-referrer document serializes a native form POST's Origin as null.
-// Only query-free GET /admin pages need same-origin form referrers; protocol
+// Query-free admin documents with forms need same-origin referrers, including
+// QR action responses used by subsequent native form submissions. Protocol
 // callbacks, redirects and errors keep no-referrer so code/state cannot leak.
 const adminFormPage = output => ({...output,headers:{...output.headers,'referrer-policy':'same-origin'}});
 const page = body => `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>WeChat bridge 管理</title><style>body{font:16px/1.6 system-ui;max-width:760px;margin:3rem auto;padding:0 1rem;color:#202b35}button,input{font:inherit;padding:.5rem;margin:.3rem 0}button{cursor:pointer}code{overflow-wrap:anywhere}img{max-width:100%}.notice{padding:1rem;background:#eef3f7}form{margin:1rem 0}label{display:block}</style><main><h1>WeChat bridge 管理</h1>${body}</main></html>`;
@@ -70,7 +71,7 @@ export function createAdminUI({config, auth, oauth, dispatch, status, now = Date
  }
  async function render(id,s,{qr,notice=''}={}) {
   await authorize(id,s);
-  if(s.pending.size)return response(200,page('<p>操作仍在等待。可以退出管理会话以取消等待中的请求。</p>'+form(s,'/admin/logout','退出并取消等待')+'<p><a href="/admin">刷新状态</a></p>'));
+  if(s.pending.size)return adminFormPage(response(200,page('<p>操作仍在等待。可以退出管理会话以取消等待中的请求。</p>'+form(s,'/admin/logout','退出并取消等待')+'<p><a href="/admin">刷新状态</a></p>')));
   const link=await operation(id,s,'/admin/link/status',{}), state=status();
   const hidden=link.requestId?`<input type="hidden" name="requestId" value="${escape(link.requestId)}">`:'';
   let body=`<p class="notice">${state.callbacksConfigured?'事件回调域名已配置。':'启动准备模式：事件回调域名尚未配置，订阅、消息轮询和发送均关闭。'}</p><p>微信状态：<strong>${escape(link.status)}</strong>；运行状态：${escape(state.phase)}</p>`;
@@ -88,7 +89,7 @@ export function createAdminUI({config, auth, oauth, dispatch, status, now = Date
   body+='<p>若扫码账号不对，请撤销本次绑定，再创建新二维码。不会自动信任另一扫码账号。</p><p><a href="/admin">刷新状态</a></p>';
   body+=form(s,'/admin/logout','退出此管理会话');
   body+='<p>退出会销毁本浏览器的管理会话并取消尚在等待的请求，不会撤销已确认的微信绑定或 Auth0 的其他登录。要停用微信访问，请先撤销绑定。</p>';
-  await authorize(id,s);return response(200,page(body));
+  await authorize(id,s);return adminFormPage(response(200,page(body)));
  }
  return {
   handles(path) {return routes.has(path.split('?')[0]);},
@@ -128,7 +129,7 @@ export function createAdminUI({config, auth, oauth, dispatch, status, now = Date
     }
     if(path===ADMIN_PATH){
      if(method!=='GET')return response(405,'',{'allow':'GET'});
-     if(s?.token){try{return adminFormPage(await render(id,s));}catch{drop(id);s=undefined;}}
+     if(s?.token){try{return await render(id,s);}catch{drop(id);s=undefined;}}
      if(!s){({id,s}=fresh());}
      return adminFormPage(response(200,page('<p>只有预先配置的 owner 可以管理此桥接。登录不会自动创建微信二维码或绑定账号。</p>'+form(s,'/admin/login','通过身份提供方登录')+form(s,'/admin/logout','取消登录 / 清除此会话')),{'set-cookie':cookie(id,300)}));
     }
